@@ -8,15 +8,19 @@ import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/routes.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
+import 'package:qinglong_app/base/sp_const.dart';
 import 'package:qinglong_app/base/theme.dart';
 import 'package:qinglong_app/base/ui/cyber/cyber_background.dart';
 import 'package:qinglong_app/base/ui/floating_search_bar_area.dart';
 import 'package:qinglong_app/base/ui/lazy_load_state.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
+import 'package:qinglong_app/base/ui/sort_nav_button.dart';
+import 'package:qinglong_app/base/ui/sort_triangle.dart';
 import 'package:qinglong_app/base/ui/tree/models/script_data.dart';
 import 'package:qinglong_app/module/others/scripts/folder_add_page.dart';
 import 'package:qinglong_app/module/others/scripts/script_upload_page.dart';
 import 'package:qinglong_app/utils/extension.dart';
+import 'package:qinglong_app/utils/sp_utils.dart';
 
 import '../../../base/cupertino_sheet.dart';
 import '../../../base/ui/tree/tree_view.dart';
@@ -27,6 +31,18 @@ import '../../../base/ui/container_page_route.dart';
 
 import 'package:qinglong_app/base/ui/content_entrance.dart';
 import 'package:qinglong_app/base/ui/confirm_dialog.dart';
+
+/// 脚本列表的排列方式（index 与 [spScriptSortMode] 存的整数一一对应）
+enum ScriptSortMode {
+  /// 按名称：目录恒定在前，同级按 A→Z（与青龙网页端默认一致）
+  name,
+
+  /// 按时间：新 → 旧
+  timeDesc,
+
+  /// 按时间：旧 → 新
+  timeAsc,
+}
 
 class ScriptPage extends ConsumerStatefulWidget {
   const ScriptPage({super.key});
@@ -47,6 +63,9 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
 
   bool buttonshow = false;
 
+  /// 当前排列方式，默认按名称
+  ScriptSortMode _sortMode = ScriptSortMode.name;
+
   void scrollToTop() {
     controller.animateTo(
       0,
@@ -58,6 +77,12 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
   @override
   void initState() {
     super.initState();
+    // 恢复上次选择的排列方式，非法值回落到按名称
+    final int savedMode = SpUtil.getInt(spScriptSortMode, defValue: 0);
+    _sortMode = ScriptSortMode.values.firstWhere(
+      (mode) => mode.index == savedMode,
+      orElse: () => ScriptSortMode.name,
+    );
     controller.addListener(floatingButtonVisibility);
     searchText.addListener(() {
       _searchDebounce?.cancel();
@@ -113,6 +138,18 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
           },
           title: "脚本管理",
           actions: [
+            // 与定时任务 / 环境变量页同一套排序入口：文字随当前方式变化，
+            // 三角表示时间方向（名称模式为空心双三角）
+            SortNavButton(
+              label: _sortLabel,
+              state: _sortState,
+              activeColor: sortActiveColor(context),
+              inactiveColor: sortInactiveColor(
+                ref.read(themeProvider).themeMode,
+              ),
+              onTap: _cycleSortMode,
+            ),
+            const SizedBox(width: 6),
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () {
@@ -251,8 +288,7 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
       );
       _filterCacheFiles(response.bean);
       list.addAll(response.bean ?? []);
-      _treeViewController = TreeViewController(children: list);
-      setState(() {});
+      _rebuildTree();
     } else {
       response.message?.toast();
     }
@@ -282,14 +318,98 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
 
   /// 应用搜索过滤
   void _applySearch() {
-    String query = searchText.text.trim();
-    if (query.isEmpty) {
-      _treeViewController = TreeViewController(children: list);
-    } else {
-      List<ScriptData> filtered = _filterTree(list, query.toLowerCase());
-      _treeViewController = TreeViewController(children: filtered);
+    _rebuildTree();
+  }
+
+  /// 汇总「排序 + 搜索过滤」并重建树控制器。
+  ///
+  /// 所有会改变列表内容的操作（加载、搜索、切换排列方式）都走这里，
+  /// 避免出现「加载后没排序」「排序后把搜索过滤丢了」这类状态不一致。
+  void _rebuildTree() {
+    final List<ScriptData> sorted = _sortTree(list, _sortMode);
+    final String query = searchText.text.trim().toLowerCase();
+    final List<ScriptData> visible =
+        query.isEmpty ? sorted : _filterTree(sorted, query);
+    _treeViewController = TreeViewController(children: visible);
+    if (mounted) {
+      setState(() {});
     }
-    setState(() {});
+  }
+
+  /// 递归排序整棵树：目录恒定排在文件之前，同级内按所选方式排序。
+  ///
+  /// 时间模式下 createTime 缺失（老版本面板不返回）的节点排在后面，
+  /// 并以文件名兜底，保证排序结果稳定可预期。
+  List<ScriptData> _sortTree(List<ScriptData> nodes, ScriptSortMode mode) {
+    final List<ScriptData> result =
+        nodes
+            .map(
+              (node) =>
+                  node.children.isEmpty
+                      ? node
+                      : node.copyWith(
+                        children: _sortTree(node.children, mode),
+                      ),
+            )
+            .toList();
+
+    result.sort((a, b) {
+      if (a.isParent != b.isParent) return a.isParent ? -1 : 1;
+      if (mode != ScriptSortMode.name) {
+        final int byTime =
+            mode == ScriptSortMode.timeDesc
+                ? b.createTime.compareTo(a.createTime)
+                : a.createTime.compareTo(b.createTime);
+        if (byTime != 0) return byTime;
+      }
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+    return result;
+  }
+
+  /// 整棵树里是否存在可用的创建时间
+  bool _anyCreateTime(List<ScriptData> nodes) {
+    for (final node in nodes) {
+      if (node.hasCreateTime) return true;
+      if (node.children.isNotEmpty && _anyCreateTime(node.children)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 排序按钮文字：直观反映当前是「名称」还是「时间」
+  String get _sortLabel =>
+      _sortMode == ScriptSortMode.name ? "名称" : "时间";
+
+  /// 排序按钮三角状态：名称模式无方向，时间模式区分新→旧 / 旧→新
+  SortState get _sortState {
+    switch (_sortMode) {
+      case ScriptSortMode.name:
+        return SortState.none;
+      case ScriptSortMode.timeDesc:
+        return SortState.desc;
+      case ScriptSortMode.timeAsc:
+        return SortState.asc;
+    }
+  }
+
+  /// 单按钮循环切换：名称 → 时间(新→旧) → 时间(旧→新) → 名称
+  void _cycleSortMode() {
+    final ScriptSortMode next =
+        switch (_sortMode) {
+          ScriptSortMode.name => ScriptSortMode.timeDesc,
+          ScriptSortMode.timeDesc => ScriptSortMode.timeAsc,
+          ScriptSortMode.timeAsc => ScriptSortMode.name,
+        };
+    _sortMode = next;
+    SpUtil.putInt(spScriptSortMode, next.index);
+    if (next != ScriptSortMode.name && !_anyCreateTime(list)) {
+      "当前面板未返回文件时间，时间排列无效，已回退为按名称".toast();
+      _sortMode = ScriptSortMode.name;
+      SpUtil.putInt(spScriptSortMode, ScriptSortMode.name.index);
+    }
+    _rebuildTree();
   }
 
   /// 递归过滤树节点：保留标题匹配的文件，以及包含匹配子节点的目录

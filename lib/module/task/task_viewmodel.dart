@@ -5,6 +5,7 @@ import 'package:qinglong_app/base/single_account_page.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
 import 'package:qinglong_app/utils/extension.dart';
+import 'package:qinglong_app/utils/remote_list_cache.dart';
 
 import '../../main.dart';
 
@@ -33,29 +34,90 @@ class TaskViewModel extends BaseViewModel {
   bool runAllTasked = false;
 
   Future<void> loadData(BuildContext context, [isLoading = true]) async {
+    final String? cacheKey = _cacheKey(context);
+    bool hydrated = false;
+
     if (isLoading && list.isEmpty) {
-      loading(notify: true);
+      // 首屏先用上次成功的本地快照渲染，避免整屏转圈等一次远程往返；
+      // 紧接着照常拉取，结果回来后覆盖（stale-while-revalidate）。
+      final List<TaskBean>? cached =
+          cacheKey == null
+              ? null
+              : RemoteListCache.decodeList<TaskBean>(
+                await RemoteListCache.read(cacheKey),
+                TaskBean.fromJson,
+              );
+
+      if (!context.mounted) return;
+
+      if (cached != null && list.isEmpty) {
+        list
+          ..clear()
+          ..addAll(cached);
+        sortList(context);
+        hydrated = true;
+        success();
+        // 快照里的运行态可能已过期，同步一下，让首轮轮询能正确判断变化
+        _syncRunningSnapshot();
+      } else {
+        loading(notify: true);
+      }
     }
 
     final tasks = await _fetchTasks(context);
+
+    if (!context.mounted) return;
+
     if (tasks == null) {
+      if (hydrated && list.isNotEmpty) {
+        // 有快照兜底时不把整页清成错误页，保留列表并轻提示
+        failToast("任务列表刷新失败，当前显示缓存数据", notify: true);
+        return;
+      }
       list.clear();
       failed(null, notify: true);
       return;
     }
     list.clear();
     list.addAll(tasks);
-    if (!context.mounted) return;
     sortList(context);
     success();
     // 同步"运行中"快照，确保加载后启动轮询首轮不会因快照为空而误判有变化
     _syncRunningSnapshot();
+    _persist(cacheKey, list);
     if (MultiAccountPageState.actionRunAll ==
             MultiAccountPageState.useAction() &&
         !runAllTasked) {
       runAllTasked = true;
       runAllTasks(context);
     }
+  }
+
+  /// 首屏快照分区 key：账号槽位 + 面板域名 + 资源名，避免换号后串数据
+  String? _cacheKey(BuildContext context) {
+    try {
+      return RemoteListCache.buildKey(
+        SingleAccountPageState.ofIndex(context),
+        SingleAccountPageState.ofUserInfo(context).host,
+        'tasks',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 落盘快照：编码可能耗时（上千任务时几十 ms），放到微任务里先让 UI 上屏
+  void _persist(String? cacheKey, List<TaskBean> data) {
+    if (cacheKey == null || data.isEmpty) return;
+    final String key = cacheKey;
+    final List<TaskBean> snapshot = List<TaskBean>.from(data);
+    Future.microtask(() {
+      final String json = RemoteListCache.encodeList<TaskBean>(
+        snapshot,
+        (bean) => bean.toJson(),
+      );
+      RemoteListCache.write(key, json);
+    });
   }
 
   /// 按青龙版本分支拉取任务列表（成功返回解析后的列表，失败返回 null）。

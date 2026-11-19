@@ -1022,7 +1022,7 @@ class _ListBodyState extends ConsumerState<ListBodyWidget>
   bool get wantKeepAlive => true;
 }
 
-class TaskItemCell extends StatelessWidget {
+class TaskItemCell extends StatefulWidget {
   final TaskBean bean;
   final WidgetRef ref;
   final FontWeight fontWeight;
@@ -1040,13 +1040,29 @@ class TaskItemCell extends StatelessWidget {
     required this.checked,
   });
 
+  @override
+  State<TaskItemCell> createState() => _TaskItemCellState();
+}
+
+class _TaskItemCellState extends State<TaskItemCell> {
+  /// 卡片展开转场控制器：左滑「详细」复用卡片自身的展开动画
+  final CardTransitionController _cardTransition = CardTransitionController();
+
+  // 沿用原无状态写法里的名字，方法体无需逐个改成 widget.xxx
+  TaskBean get bean => widget.bean;
+  WidgetRef get ref => widget.ref;
+  FontWeight get fontWeight => widget.fontWeight;
+  bool get editMode => widget.editMode;
+  bool get checked => widget.checked;
+  ValueChanged<String> get checkedCallback => widget.checkedCallback;
+
   bool get isCyber => ref.read(themeProvider).themeMode == modeCyber;
 
   @override
   Widget build(BuildContext context) {
     // 【使用示例】赛博模式使用 CyberSlidable 统一组件
     // 左滑4个按钮（endActions）：编辑/置顶/禁用/删除
-    // 右滑2个按钮（startActions）：运行停止/日志
+    // 右滑2个按钮（startActions）：运行停止/详细（点击卡片 = 直接看日志）
     if (isCyber) {
       // 复用 CyberSlidable 组件（与 appkey_page/change_account_page 一致），
       // 它的 CustomSlidableAction 用 Material elevation 渲染赛博按钮光晕
@@ -1080,10 +1096,10 @@ class TaskItemCell extends StatelessWidget {
               },
             ),
             CyberSlideAction(
-              label: '日志',
-              icon: CupertinoIcons.text_justifyleft,
+              label: '详细',
+              icon: CupertinoIcons.doc_text,
               color: const Color(0xff606467),
-              onTap: () => logCron(context, ref),
+              onTap: () => _cardTransition.open(),
             ),
           ],
           endActions: [
@@ -1275,11 +1291,11 @@ class TaskItemCell extends StatelessWidget {
               AppSlideButton(
                 context: context,
                 color: const Color(0xff606467),
-                icon: CupertinoIcons.text_justifyleft,
-                label: '日志',
+                icon: CupertinoIcons.doc_text,
+                label: '详细',
                 cyberMode: isCyber,
                 width: double.infinity,
-                onTap: () => logCron(context, ref),
+                onTap: () => _cardTransition.open(),
               ),
             ],
           ),
@@ -1291,9 +1307,17 @@ class TaskItemCell extends StatelessWidget {
 
   /// 构建卡片主体内容（不含外层 margin/decoration，由 CapsuleGlowCard 提供）
   Widget _buildCardChild(BuildContext context) {
-    // 卡片共享展开：点击卡片 → 卡片内容隐藏 → 容器从卡片矩形展开详情页；
-    // 卡片外壳（CapsuleGlowCard 底色）保持可见，收回时内容淡回、无缝衔接
+    // 卡片共享展开：点击卡片 → 直接打开该任务的实时日志；
+    // 任务详细信息改由左滑「详细」按钮进入（复用同一条卡片展开转场，
+    // 卡片内容隐藏 → 容器从卡片矩形展开详情页，收回时无缝衔接）。
     return CardTransitionSource(
+      controller: _cardTransition,
+      onTap: () {
+        // 编辑模式下点击由内层 InkWell 处理勾选，这里不接管
+        if (editMode) return;
+        HapticFeedback.lightImpact();
+        logCron(context, ref);
+      },
       child: Material(
         color: Colors.transparent,
         child: InkWell(

@@ -43,6 +43,13 @@ const String spGithubLastRemindTime = "spGithubLastRemindTime";
 // 冷启动主动提醒时"已提醒过"的 GitHub 安装包文件名序号（release_N）
 const String spGithubLastRemindNo = "spGithubLastRemindNo";
 
+/// 脚本管理列表排列方式（int）
+///
+/// 0 = 按名称（A→Z，目录始终在前，与青龙网页端默认一致）
+/// 1 = 按时间（新→旧）
+/// 2 = 按时间（旧→新）
+const String spScriptSortMode = "spScriptSortMode";
+
 /// 毛玻璃效果开关（bool，默认 true=开启）
 ///
 /// true  = 透明背景 + BackdropFilter 高斯模糊（毛玻璃）

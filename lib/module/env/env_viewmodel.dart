@@ -8,6 +8,7 @@ import 'package:qinglong_app/main.dart';
 import 'package:qinglong_app/module/env/env_bean.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/icloud_utils.dart';
+import 'package:qinglong_app/utils/remote_list_cache.dart';
 import 'package:qinglong_app/utils/webdav_backup_utils.dart';
 
 class EnvViewModel extends BaseViewModel {
@@ -24,32 +25,91 @@ class EnvViewModel extends BaseViewModel {
   }
 
   Future<void> loadData(BuildContext context, [isLoading = true]) async {
+    final String? cacheKey = _cacheKey(context);
+    bool hydrated = false;
+
     if (isLoading && list.isEmpty) {
-      loading(notify: true);
+      // 首屏先用上次成功的本地快照渲染，避免整屏转圈等一次远程往返；
+      // 紧接着照常发起网络请求，结果回来后覆盖（stale-while-revalidate）。
+      final List<EnvBean>? cached =
+          cacheKey == null
+              ? null
+              : RemoteListCache.decodeList<EnvBean>(
+                await RemoteListCache.read(cacheKey),
+                EnvBean.fromJson,
+              );
+
+      if (!context.mounted) return;
+
+      if (cached != null && list.isEmpty) {
+        _applyList(cached);
+        hydrated = true;
+        success();
+      } else {
+        loading(notify: true);
+      }
     }
 
     HttpResponse<List<EnvBean>> result = await SingleAccountPageState.ofApi(
       context,
     ).envs("");
 
+    if (!context.mounted) return;
+
     if (result.success && result.bean != null) {
-      list.clear();
-      list.addAll(result.bean!);
-      disabledList.clear();
-      disabledList.addAll(
-        list.where((element) => element.status == 1).toList(),
-      );
-      enabledList.clear();
-      enabledList.addAll(list.where((element) => element.status == 0).toList());
-      if (!context.mounted) return;
+      _applyList(result.bean!);
       notifyICloud(context, list);
       success();
+      _persist(cacheKey, list);
+    } else if (hydrated && list.isNotEmpty) {
+      // 已经有快照兜底时，网络失败不该把列表清空成错误页，只提示一下
+      failToast(result.message, notify: true);
     } else {
       list.clear();
       disabledList.clear();
       enabledList.clear();
       failed(result.message, notify: true);
     }
+  }
+
+  /// 首屏快照分区 key：账号槽位 + 面板域名 + 资源名，避免换号后串数据
+  String? _cacheKey(BuildContext context) {
+    try {
+      return RemoteListCache.buildKey(
+        SingleAccountPageState.ofIndex(context),
+        SingleAccountPageState.ofUserInfo(context).host,
+        'envs',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 列表 + 三个分区一次性落位
+  void _applyList(List<EnvBean> data) {
+    list
+      ..clear()
+      ..addAll(data);
+    disabledList
+      ..clear()
+      ..addAll(list.where((element) => element.status == 1));
+    enabledList
+      ..clear()
+      ..addAll(list.where((element) => element.status == 0));
+  }
+
+  /// 落盘快照：编码可能耗时（大列表几十 ms），放到微任务里先让 UI 上屏
+  void _persist(String? cacheKey, List<EnvBean> data) {
+    if (cacheKey == null || data.isEmpty) return;
+    final String key = cacheKey;
+    final List<EnvBean> snapshot = List<EnvBean>.from(data);
+    Future.microtask(() {
+      final String json = RemoteListCache.encodeList<EnvBean>(
+        snapshot,
+        (bean) => bean.toJson(),
+      );
+      RemoteListCache.write(key, json);
+    });
   }
 
   void notifyICloud(BuildContext context, List<EnvBean> list) {
