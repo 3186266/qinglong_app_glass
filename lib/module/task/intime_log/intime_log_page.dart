@@ -3,6 +3,7 @@ import 'package:qinglong_app/utils/share_utils.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:qinglong_app/base/app_colors.dart';
 import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
@@ -19,6 +20,7 @@ import '../../../base/commit_button.dart';
 import '../../../base/http/api.dart';
 import '../../../base/theme.dart';
 import '../../../base/ui/log_text_view.dart';
+import 'task_history_log_tab.dart';
 
 class InTimeLogPage extends ConsumerStatefulWidget {
   final String cronId;
@@ -39,8 +41,16 @@ class InTimeLogPage extends ConsumerStatefulWidget {
 }
 
 class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
-    with LazyLoadState<InTimeLogPage>, PauseableTimerMixin<InTimeLogPage> {
+    with
+        LazyLoadState<InTimeLogPage>,
+        PauseableTimerMixin<InTimeLogPage>,
+        SingleTickerProviderStateMixin {
   String? content;
+
+  /// 「最新日志 / 历史日志」两个页签
+  late final TabController _tabController;
+
+  int _tabIndex = 0;
 
   /// 传给 LogTextView 的渲染内容：超长日志仅渲染尾部（实时页自动滚底，
   /// 完整内容仍可分享），避免 2s 轮询的全量重建成本随日志增长无上限
@@ -157,7 +167,19 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
   bool hasToastedFailed = false;
 
   @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabIndex != _tabController.index) {
+        setState(() => _tabIndex = _tabController.index);
+      }
+    });
+  }
+
+  @override
   void dispose() {
+    _tabController.dispose();
     cancelPauseableTimer();
     controller?.dispose();
     super.dispose();
@@ -170,44 +192,137 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
     return Builder(
       builder: (context) {
         return Scaffold(
-          floatingActionButton: LogScrollButton(
-            active: alwaysAuthScroll,
-            onTap: () {
-              setState(() {
-                alwaysAuthScroll = !alwaysAuthScroll;
-              });
-              // 开启瞬间立即滚底：日志不再变化时（任务已结束）轮询的
-              // changed 条件永远不满足，只切标记会表现为「点击开启无效」
-              if (alwaysAuthScroll) {
-                scrollLogToBottom(controller);
-              }
-            },
-          ),
+          floatingActionButton:
+              _tabIndex == 0
+                  ? LogScrollButton(
+                    active: alwaysAuthScroll,
+                    onTap: () {
+                      setState(() {
+                        alwaysAuthScroll = !alwaysAuthScroll;
+                      });
+                      // 开启瞬间立即滚底：日志不再变化时（任务已结束）轮询的
+                      // changed 条件永远不满足，只切标记会表现为「点击开启无效」
+                      if (alwaysAuthScroll) {
+                        scrollLogToBottom(controller);
+                      }
+                    },
+                  )
+                  : null,
           appBar: QlAppBar(
             canBack: true,
-            actions: [
-              CommitButton(
-                title: "分享",
-                onTap: () {
-                  ShareUtils.share(content ?? "");
-                },
-              ),
-            ],
+            actions:
+                _tabIndex == 0
+                    ? [
+                      CommitButton(
+                        title: "分享",
+                        onTap: () {
+                          ShareUtils.share(content ?? "");
+                        },
+                      ),
+                    ]
+                    : const [],
             title: widget.title,
           ),
-          body:
-              (content == null)
-                  ? const Center(child: LoadingWidget())
-                  : CupertinoScrollbar(
-                    child: LogTextView(
-                      content: _renderContent ?? content,
-                      accountIndex:
-                          SingleAccountPageState.of(context)?.index ?? 0,
-                      scrollController: controller,
+          body: Column(
+            children: [
+              _buildTabBar(context),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
+                  children: [
+                    // 最新日志：现有实时流
+                    (content == null)
+                        ? const Center(child: LoadingWidget())
+                        : CupertinoScrollbar(
+                          child: LogTextView(
+                            content: _renderContent ?? content,
+                            accountIndex:
+                                SingleAccountPageState.of(context)?.index ?? 0,
+                            scrollController: controller,
+                          ),
+                        ),
+                    // 历史日志：该任务的历史日志文件列表，点击直接查看
+                    TaskHistoryLogTab(
+                      cronId: widget.cronId,
+                      taskName: widget.title,
+                      command: widget.command,
                     ),
-                  ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         );
       },
+    );
+  }
+
+  /// 顶部「最新日志 / 历史日志」页签。
+  /// 选中态：主题色文字 + 短下划线；未选态：次色文字（对齐参考图样式）
+  Widget _buildTabBar(BuildContext context) {
+    final bool isCyber = ref.read(themeProvider).themeMode == modeCyber;
+    final Color accent = ref.watch(themeProvider).primaryColor;
+    final Color descColor =
+        isCyber
+            ? CyberColors.idleGray
+            : ref.watch(themeProvider).themeColor.descColor();
+    final Color dividerColor =
+        isCyber ? const Color(0x22FFFFFF) : const Color(0xFFE5E5EA);
+
+    return Container(
+      height: 46,
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: dividerColor, width: 0.5)),
+      ),
+      child: Row(
+        children: [
+          _buildTabItem(0, "最新日志", accent, descColor),
+          _buildTabItem(1, "历史日志", accent, descColor),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabItem(
+    int index,
+    String label,
+    Color accent,
+    Color descColor,
+  ) {
+    final bool selected = _tabIndex == index;
+    return Expanded(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _tabController.animateTo(index),
+        child: Column(
+          children: [
+            Expanded(
+              child: Center(
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 160),
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    color: selected ? accent : descColor,
+                  ),
+                  child: Text(label),
+                ),
+              ),
+            ),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              width: 58,
+              height: 3,
+              decoration: BoxDecoration(
+                color: selected ? accent : Colors.transparent,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(2),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

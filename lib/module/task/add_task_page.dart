@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +12,8 @@ import 'package:qinglong_app/base/ui/lazy_load_state.dart';
 import 'package:qinglong_app/base/upload_script_widget.dart';
 import 'package:qinglong_app/module/others/scripts/script_upload_page.dart';
 import 'package:qinglong_app/module/subscribe/add_subscribe_page.dart';
+import 'package:qinglong_app/module/task/random_cron/random_cron_config.dart';
+import 'package:qinglong_app/module/task/random_cron/random_cron_sheet.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/utils.dart';
@@ -37,6 +40,12 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
   final TextEditingController _cronController = TextEditingController();
 
   FocusNode focusNode = FocusNode();
+
+  /// 随机定时配置：enabled 时每次保存都会按配置重新生成 cron
+  RandomCronConfig _randomConfig = RandomCronConfig();
+
+  /// 当前面板槽位（决定随机配置与分组槽位存在哪个命名空间下）
+  int _panelIndex = 0;
 
   @override
   void initState() {
@@ -123,30 +132,49 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
                   const SizedBox(height: 15),
                   const TitleWidget("定时规则", required: true),
                   const SizedBox(height: 10),
-                  TextField(
-                    controller: _cronController,
-                    minLines: 1,
-                    textAlignVertical: TextAlignVertical.center,
-                    decoration: const InputDecoration(hintText: "可选，多个命令用换行分隔"),
-                    autofocus: false,
-                  ),
-                  const SizedBox(height: 10),
-                  GestureDetector(
-                    onTap: () async {
-                      try {
-                        var cron = _cronController.text.replaceAll(" ", "_");
-                        await launchUrl(
-                          Uri.tryParse("https://crontab.guru/#$cron")!,
-                        );
-                      } catch (_) {}
-                    },
-                    child: Text(
-                      "在线测试",
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: ref.watch(themeProvider).primaryColor,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _cronController,
+                          minLines: 1,
+                          textAlignVertical: TextAlignVertical.center,
+                          decoration: const InputDecoration(
+                            hintText: "可选，多个命令用换行分隔",
+                          ),
+                          autofocus: false,
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                      _buildRandomButton(),
+                    ],
+                  ),
+                  if (_randomConfig.enabled) ...[
+                    const SizedBox(height: 8),
+                    _buildRandomSummary(),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () async {
+                          try {
+                            var cron = _cronController.text.replaceAll(" ", "_");
+                            await launchUrl(
+                              Uri.tryParse("https://crontab.guru/#$cron")!,
+                            );
+                          } catch (_) {}
+                        },
+                        child: Text(
+                          "在线测试",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: ref.watch(themeProvider).primaryColor,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 30),
                   Visibility(
@@ -187,6 +215,106 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
 
   GlobalKey<UploadScriptWidgetState> fileKey = GlobalKey();
 
+  /// 「随机」入口：放在 cron 输入框右侧（与参考布局一致）
+  Widget _buildRandomButton() {
+    final Color accent = ref.watch(themeProvider).primaryColor;
+    return GestureDetector(
+      onTap: _openRandomCron,
+      child: Container(
+        height: 46,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: accent.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(CupertinoIcons.shuffle, size: 15, color: accent),
+            const SizedBox(width: 4),
+            Text(
+              "随机",
+              style: TextStyle(fontSize: 13, color: accent),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 已启用随机定时时的摘要行：配置 + 重新随机 + 关闭
+  Widget _buildRandomSummary() {
+    final Color accent = ref.watch(themeProvider).primaryColor;
+    final Color desc = ref.watch(themeProvider).themeColor.descColor();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(CupertinoIcons.sparkles, size: 13, color: accent),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              _randomConfig.summary,
+              style: TextStyle(fontSize: 11, height: 1.4, color: desc),
+            ),
+          ),
+          GestureDetector(
+            onTap: () => _regenerate(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Text(
+                "重新随机",
+                style: TextStyle(fontSize: 11, color: accent),
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: () {
+              setState(() => _randomConfig.enabled = false);
+              RandomCronGenerator.clearConfig(
+                _panelIndex,
+                _nameController.text,
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: Icon(CupertinoIcons.xmark, size: 13, color: desc),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openRandomCron() async {
+    hideKeyboardFocus();
+    final RandomCronConfig? result = await showRandomCronSheet(
+      context,
+      _randomConfig,
+    );
+    if (result == null || !mounted) return;
+    setState(() => _randomConfig = result);
+    // 应用后立刻生成一次填进输入框，让用户能先看到结果再决定保存
+    _regenerate();
+  }
+
+  /// 按当前配置重新生成 cron 并写入输入框
+  void _regenerate({bool toast = true}) {
+    if (!_randomConfig.enabled) return;
+    final String cron = RandomCronGenerator.generate(
+      _randomConfig,
+      panelIndex: _panelIndex,
+      taskName: _nameController.text,
+    );
+    _cronController.text = cron;
+    if (toast) "已随机生成：$cron".toast();
+  }
+
   void submit() async {
     if (_nameController.text.isEmpty) {
       "任务名称不能为空".toast();
@@ -195,6 +323,10 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
     if (_commandController.text.isEmpty) {
       "命令不能为空".toast();
       return;
+    }
+    // 随机定时：每次保存都重新洗一次牌（与面板上的说明一致）
+    if (_randomConfig.enabled) {
+      _regenerate(toast: false);
     }
     if (_cronController.text.isEmpty) {
       "定时规则不能为空".toast();
@@ -241,6 +373,16 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
       await EasyLoading.dismiss();
       if (!mounted) return;
       if (response.success) {
+        // 记住随机配置，下次编辑同一任务能回填（关掉随机则清掉）
+        if (_randomConfig.enabled) {
+          RandomCronGenerator.saveConfig(
+            _panelIndex,
+            _nameController.text,
+            _randomConfig,
+          );
+        } else {
+          RandomCronGenerator.clearConfig(_panelIndex, _nameController.text);
+        }
         (widget.taskBean?.sId == null) ? "新增成功" : "修改成功".toast();
         ref
             .read(
@@ -270,6 +412,14 @@ class _AddTaskPageState extends ConsumerState<AddTaskPage>
 
   @override
   void onLazyLoad() {
+    // 面板槽位在此读取（initState 里拿不到 InheritedWidget）
+    _panelIndex = SingleAccountPageState.of(context)?.index ?? 0;
+    // 回填该任务上次保存的随机定时配置
+    _randomConfig = RandomCronGenerator.loadConfig(
+      _panelIndex,
+      _nameController.text,
+    );
+    setState(() {});
     if (widget.hideUploadFile) {
       focusNode.requestFocus();
     }
