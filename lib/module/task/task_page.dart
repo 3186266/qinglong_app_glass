@@ -1012,8 +1012,8 @@ class _ListBodyState extends ConsumerState<ListBodyWidget>
       },
       itemCount: filteredList.length,
       separatorBuilder: (BuildContext context, int index) {
-        // 卡片间距12px，不用分割线
-        return const SizedBox(height: 12);
+        // 卡片间距 9px（原 12px），配合紧凑卡片减少整体占位
+        return const SizedBox(height: 9);
       },
     );
   }
@@ -1378,7 +1378,7 @@ class _TaskItemCellState extends State<TaskItemCell> {
           duration: const Duration(milliseconds: 250),
           child: SizedBox(
             width: editMode ? 40 : 0,
-            height: 40,
+            height: 34,
             child: Visibility(
               visible: editMode,
               child: Padding(
@@ -1389,7 +1389,7 @@ class _TaskItemCellState extends State<TaskItemCell> {
                   checked
                       ? CupertinoIcons.checkmark_alt_circle
                       : CupertinoIcons.circle,
-                  size: 25,
+                  size: 23,
                   color:
                       checked
                           ? ref.watch(themeProvider).primaryColor
@@ -1403,7 +1403,8 @@ class _TaskItemCellState extends State<TaskItemCell> {
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: isCyber ? 15 : AppleColors.spaceMd,
-              vertical: 13,
+              // 紧凑行高：13 -> 8，单卡高度约降 15%
+              vertical: 8,
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1411,8 +1412,8 @@ class _TaskItemCellState extends State<TaskItemCell> {
                 // 左侧状态竖条
                 Container(
                   width: 3,
-                  height: 42,
-                  margin: const EdgeInsets.only(right: 12, top: 2),
+                  height: 34,
+                  margin: const EdgeInsets.only(right: 10, top: 1),
                   decoration: BoxDecoration(
                     color: sc,
                     borderRadius: BorderRadius.circular(2),
@@ -1446,7 +1447,7 @@ class _TaskItemCellState extends State<TaskItemCell> {
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 // 所有模式统一 MiSans（继承全局字体，fontFamily 不指定）
-                                fontSize: 16,
+                                fontSize: 15,
                                 // 跟随全局字重设置（四档 400/500/600/700）
                                 fontWeight: fontWeight,
                                 color: nameColor,
@@ -1478,14 +1479,14 @@ class _TaskItemCellState extends State<TaskItemCell> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 5),
+                      const SizedBox(height: 4),
                       // 状态行：状态胶囊标签 + 定时规则
                       Row(
                         children: [
                           Container(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
+                              horizontal: 7,
+                              vertical: 1,
                             ),
                             decoration: BoxDecoration(
                               color: sc.withValues(alpha: 0.10),
@@ -1514,7 +1515,7 @@ class _TaskItemCellState extends State<TaskItemCell> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 2),
                       // 命令行：右侧嵌运行/停止按钮（与命令文案同行对齐，不撑大卡片）
                       Row(
                         children: [
@@ -1602,7 +1603,7 @@ class _TaskItemCellState extends State<TaskItemCell> {
                 }
               },
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
         decoration: BoxDecoration(
           color: c.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(999),
@@ -1618,11 +1619,11 @@ class _TaskItemCellState extends State<TaskItemCell> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 14, color: c),
+            Icon(icon, size: 13, color: c),
             const SizedBox(width: 3),
             Text(
               label,
-              style: TextStyle(fontSize: 12, fontWeight: fontWeight, color: c),
+              style: TextStyle(fontSize: 11, fontWeight: fontWeight, color: c),
             ),
           ],
         ),
