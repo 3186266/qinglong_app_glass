@@ -80,6 +80,7 @@ class Http {
     bool useCache = true,
     Duration? ttl,
     bool reloginRetry = false,
+    bool authAlert = true,
   }) async {
     try {
       _init();
@@ -115,11 +116,12 @@ class Http {
           serializationName: serializationName,
           useCache: false,
           reloginRetry: true,
+          authAlert: authAlert,
         );
       }
 
       // 重试仍失败且 needRelogin=true：说明 token 确实失效，跳转登录页
-      _maybeExitLogin(result);
+      _maybeExitLogin(result, alert: authAlert);
 
       if (useCache && result.success) {
         // 优先使用调用方显式传入的 ttl,否则按 URI 推断分级 TTL
@@ -142,9 +144,10 @@ class Http {
           serializationName: serializationName,
           useCache: false,
           reloginRetry: true,
+          authAlert: authAlert,
         );
       }
-      _maybeExitLogin(result);
+      _maybeExitLogin(result, alert: authAlert);
       return result;
     } catch (e) {
       logger.e(e);
@@ -158,16 +161,6 @@ class Http {
       json.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
     );
     return '$uri?${Uri(queryParameters: sortedParams.map((k, v) => MapEntry(k, v ?? ''))).query}';
-  }
-
-  /// 重建 Dio 实例，清空可能失效的 TCP 连接池
-  /// 长时间不活动后，底层 keep-alive 连接可能已被运营商/路由器/服务器静默断开
-  /// Dio 复用死连接会导致响应乱码/截断，重建 Dio 是最彻底的修复
-  void _rebuildDio() {
-    try {
-      _dio?.close(force: true);
-    } catch (_) {}
-    initDioConfig(host);
   }
 
   /// 并发安全：多个请求同时失败时，只重建一次 Dio + 刷新一次 token
@@ -201,23 +194,124 @@ class Http {
   ///
   /// - 网络类异常（超时 / 连接失败）：只重建一次 Dio，**不做密码重新登录**
   ///   —— 断网时 silentReLogin 同样会超时，白等一轮还让用户以为账号出问题
-  /// - 其它（HTML 登录页 / 响应异常 / 401）：重建 Dio + 静默刷新 token
+  /// - 响应格式异常（空响应 / 非 {code,data,message} 结构 / 接口不存在）：
+  ///   同样只重建 Dio。这些是"这个接口的响应不合预期"，与 token 无关，
+  ///   拿去换 token 只会让 2.21 上不存在的 /dashboard/successes 反复触发重登
+  /// - 401 / HTML 登录页：重建 Dio + 静默刷新 token
   Future<void> _prepareRetry(HttpResponse result) async {
-    if (result.code == networkErrorCode) {
+    if (result.code == networkErrorCode ||
+        result.code == -1000 ||
+        result.code == 404) {
       await _rebuildDioSoftly();
       return;
     }
     await _handleTokenExpired();
   }
 
-  /// 重试仍失败时的收尾：只有"真的登录态失效"才弹登录窗
+  /// 正在做登录态探测，避免并发请求一起探测
+  bool _probingAuth = false;
+
+  /// 上次探测时间，1 分钟内不重复探测
+  DateTime? _lastAuthProbeAt;
+
+  /// 重试仍失败时的收尾：**必须先证明 token 真的失效**，才弹登录窗
   ///
-  /// 网络类异常永远不弹 —— 这正是「点进仪表盘就弹连接失败，其实请求还在跑」
-  /// 的根因：8 个并发接口里只要有一个超时，就会被误判成需要重新登录。
-  void _maybeExitLogin(HttpResponse result) {
+  /// 「点进仪表盘就弹连接失败，其实请求还在跑」的成因是：只要某个接口的响应
+  /// 不合预期（网络超时、空响应、HTML 兜底页、面板上不存在的路由），旧逻辑
+  /// 就会当成登录过期并弹窗。而这些情况和登录态毫无关系。
+  ///
+  /// 现在的规则：
+  /// 1. 只有 HTTP 401 才可能弹（网络错误 / -1000 / 404 / 权限不足一律不弹）
+  /// 2. 401 之后再发一次轻量探测（`/api/user`），探测确认 token 确实无效才弹
+  /// 3. 调用方声明为"辅助接口"的请求（[authAlert] = false）直接跳过
+  void _maybeExitLogin(HttpResponse result, {bool alert = true}) {
     if (!result.needRelogin) return;
-    if (result.code == networkErrorCode) return;
-    exitLogin();
+    if (result.code != 401) return;
+    if (!alert || pushedLoginPage || _probingAuth) return;
+
+    final DateTime now = DateTime.now();
+    final DateTime? last = _lastAuthProbeAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 1)) {
+      return;
+    }
+    _lastAuthProbeAt = now;
+    unawaited(_probeThenExitLogin());
+  }
+
+  /// 探测当前 token 是否真的失效，失效才弹重新登录
+  Future<void> _probeThenExitLogin() async {
+    _probingAuth = true;
+    try {
+      final bool invalid = await _isTokenInvalid();
+      if (invalid && !pushedLoginPage) {
+        await exitLogin();
+      }
+    } finally {
+      _probingAuth = false;
+    }
+  }
+
+  /// 用一条最小请求确认登录态。
+  ///
+  /// 返回 true 表示 token 确实失效（探测请求本身也被 401 拒绝）；
+  /// 探测请求返回 200/403/404 或探测自身网络异常，一律按"token 没说失效"
+  /// 处理 —— 宁可少弹一次窗，也不要打断正在进行的请求。
+  Future<bool> _isTokenInvalid() async {
+    String? token;
+    bool secretMode = false;
+    try {
+      final UserInfoViewModel info = getIt<UserInfoViewModel>(
+        instanceName: index.toString(),
+      );
+      token = info.token;
+      // 应用授权模式（Client ID/Secret 换来的凭证）走 /open/* 命名空间，
+      // 用 /api/user 探测会因为它不认这种 token 而误判成"登录失效"
+      secretMode = info.useSecretLogined;
+    } catch (_) {
+      return false;
+    }
+    if (token == null || token.isEmpty) return false;
+
+    final String probePath = secretMode ? '/open/user' : '/api/user';
+    Dio? probe;
+    try {
+      probe = Dio(
+        BaseOptions(
+          baseUrl: host,
+          connectTimeout: const Duration(seconds: 6),
+          receiveTimeout: const Duration(seconds: 6),
+          contentType: "application/json",
+          responseType: ResponseType.plain,
+        ),
+      );
+      (probe.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+        final HttpClient client = HttpClient();
+        client.badCertificateCallback =
+            (X509Certificate cert, String host, int port) => true;
+        return client;
+      };
+      final Response<dynamic> res = await probe.get<dynamic>(
+        probePath,
+        queryParameters: <String, String>{
+          "t": (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString(),
+        },
+        options: Options(headers: <String, String>{
+          "Authorization": "Bearer $token",
+          "User-Agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1",
+        }),
+      );
+      return res.statusCode == 401;
+    } on DioException catch (e) {
+      // 只有明确拿到 401 才算失效；超时/连不上都不算
+      return e.response?.statusCode == 401;
+    } catch (_) {
+      return false;
+    } finally {
+      try {
+        probe?.close(force: true);
+      } catch (_) {}
+    }
   }
 
   /// 处理 token 失效 / 解析异常：重建 Dio + 静默刷新 token
@@ -230,7 +324,9 @@ class Http {
     _reloginCompleter = Completer<void>();
     try {
       // 先重建 Dio，清空可能失效的连接池（解决长时间不活动后死连接问题）
-      _rebuildDio();
+      // 用软重建：面板一屏并发 6~8 个请求时，force: true 会把其它仍在传输
+      // 的连接一起掐断，表现成"所有数据都加载失败"。
+      await _rebuildDioSoftly();
       // 静默刷新 token（失败也无所谓，重试可能仍会成功，因为 Dio 已重建）
       await silentReLogin();
       _reloginCompleter!.complete();

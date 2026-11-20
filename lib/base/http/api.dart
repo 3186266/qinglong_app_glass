@@ -109,6 +109,10 @@ class Api {
   }
 
   // 今日成功任务明细（按成功次数降序）
+  //
+  // authAlert: false —— 该路由 2.22 才有，2.21 及更早面板上请求它必然失败。
+  // 这类"面板没有这个接口"的失败绝不该弹「是否重新登录」，否则一进仪表盘
+  // 就会在数据已正常加载的情况下弹一次登录框。
   Future<HttpResponse<String>> dashboardSuccesses({
     bool useCache = false,
   }) async {
@@ -116,10 +120,11 @@ class Api {
       getIt<Url>(instanceName: index.toString()).dashboardSuccesses,
       {},
       useCache: useCache,
+      authAlert: false,
     );
   }
 
-  // 今日失败任务明细（按失败次数降序）
+  // 今日失败任务明细（按失败次数降序，同样只在 2.22+ 存在）
   Future<HttpResponse<String>> dashboardFailures({
     bool useCache = false,
   }) async {
@@ -127,6 +132,7 @@ class Api {
       getIt<Url>(instanceName: index.toString()).dashboardFailures,
       {},
       useCache: useCache,
+      authAlert: false,
     );
   }
 
