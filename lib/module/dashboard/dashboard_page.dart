@@ -15,6 +15,7 @@ import 'package:qinglong_app/base/ui/cyber/cyber_background.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/base/ui/log_entry_button.dart';
 import 'package:qinglong_app/module/dashboard/dashboard_models.dart';
+import 'package:qinglong_app/module/dashboard/dashboard_today_runs.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/module/task/intime_log/intime_log_page.dart';
 
@@ -51,8 +52,11 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
   // 今日成功 / 失败任务明细：直接铺在仪表盘上，不必先点数字才看得到
   List<DashboardTaskResult> _successes = const [];
   List<DashboardTaskResult> _failures = const [];
-  // 明细接口可用性（面板 <2.22 / 开放应用无 dashboard 权限 的提示各不相同）
+  // 明细接口可用性（2.22+ 有任务级明细；2.21 只有汇总数字）
   DashboardApiStatus _detailStatus = DashboardApiStatus.ok;
+  // 2.21 降级：今日运行记录（由 /api/logs 今日日志聚合）
+  List<DashboardTodayRun> _todayRuns = const [];
+  bool _todayRunsLoading = false;
   // 面板过低（dashboard 接口整体缺失）时用 /api/crons 兜底出的基础统计
   int? _fallbackTotal;
   int? _fallbackEnabled;
@@ -172,6 +176,12 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       await _loadCronsFallback(api, overviewRes);
     }
 
+    // 2.21 及更早版本没有任务级明细接口：改用今日日志聚合，
+    // 至少把「今天哪些任务跑过、各几次」呈现出来，而不是一句版本提示。
+    if (_detailStatus.state != DashboardApiState.ok) {
+      await _loadTodayRuns(api);
+    }
+
     // 含 CPU/磁盘的 system 接口独立加载，返回后原位更新资源卡片
     await _loadSystem(api);
   }
@@ -198,8 +208,8 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
           '开放应用未授予 dashboard 权限（403），今日统计不可用；'
               '请在青龙「应用」中为该应用勾选 dashboard 权限',
         DashboardApiState.missing =>
-          '当前面板未提供仪表盘统计接口（需青龙 2.22 及以上），'
-              '以下为任务列表实时统计，今日执行/成功/失败不可用',
+          '当前面板未提供仪表盘统计接口，以下为任务列表实时统计，'
+              '今日执行/成功/失败不可用',
         _ =>
           '仪表盘统计接口请求失败（${status.message ?? '网络异常'}），'
               '以下为任务列表实时统计',
@@ -215,6 +225,38 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       });
     } catch (_) {
       // 兜底失败则保留原错误提示
+    }
+  }
+
+  /// 2.21 降级：从 /api/logs 的今日日志聚合「今天哪些任务跑过」
+  ///
+  /// 日志目录名是 `脚本名_任务id`（如 jd_bean_12），再借 /api/crons 把 id 映射
+  /// 回任务名，卡片上就能显示用户认识的名字。
+  Future<void> _loadTodayRuns(Api api) async {
+    if (!mounted) return;
+    setState(() => _todayRunsLoading = true);
+    try {
+      final logRes = await api.taskLog();
+      final cronRes = await api.crons();
+      if (!mounted) return;
+
+      final Map<int, String> names = <int, String>{};
+      for (final e in cronRes.bean ?? const []) {
+        final int id = e.id ?? 0;
+        final String name = e.name ?? '';
+        if (id > 0 && name.isNotEmpty) names[id] = name;
+      }
+      final List<DashboardTodayRun> runs = buildTodayRuns(
+        logRes.bean,
+        namesByCronId: names,
+      );
+      setState(() {
+        _todayRuns = runs;
+        _todayRunsLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _todayRunsLoading = false);
     }
   }
 
@@ -314,12 +356,22 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       _buildVersionCard(isCyber),
       if (_overview != null || _fallbackTotal != null)
         _buildOverviewCard(isCyber),
-      // 今日成功 / 失败任务直接上屏（原实现只在点数字后才看得到明细）。
-      // 面板整体过低时不重复刷两块告警，概览卡片的兜底提示已说明原因。
-      if (_detailStatus.state == DashboardApiState.ok || _overview != null) ...[
+      // 2.22+ 有任务级明细：今日成功 / 今日失败各一张卡；
+      // 2.21 及更早只有汇总数字：用今日日志聚合出「今日运行记录」一张卡顶上。
+      if (_detailStatus.state == DashboardApiState.ok) ...[
         _buildTodayResultCard(isCyber, isSuccess: true),
         _buildTodayResultCard(isCyber, isSuccess: false),
-      ],
+      ] else if (_overview != null)
+        _buildTodayRunsCard(isCyber),
+      // 403（开放应用缺 dashboard 权限）只提示，不做假数据
+      if (_detailStatus.state == DashboardApiState.denied)
+        _buildCard(
+          isCyber: isCyber,
+          child: _buildNotice(
+            isCyber,
+            _detailStatus.message ?? '今日任务明细不可用',
+          ),
+        ),
       if (_trend.isNotEmpty) _buildTrendCard(isCyber),
       if (_topTime.isNotEmpty) _buildTopTimeCard(isCyber),
       if (_topCount.isNotEmpty) _buildTopCountCard(isCyber),
@@ -427,8 +479,9 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
         fromApi ? '$_todayFailValue' : (_failTotal > 0 ? '$_failTotal' : '-');
     final successRate = fromApi ? (_overview!['successRate']?.toString() ?? '0') : '-';
     final avgTime = fromApi ? ((_overview!['avgTime'] as num?)?.toInt() ?? 0) : 0;
+    // 有概览数字就能点进明细页：2.22+ 看任务级明细，2.21 看今日运行记录
     final bool canOpenDetail =
-        _detailStatus.state == DashboardApiState.ok || !fromApi;
+        fromApi || _detailStatus.state == DashboardApiState.ok;
 
     return _buildSectionCard(
       isCyber: isCyber,
@@ -531,6 +584,205 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
           _buildNotice(isCyber, _fallbackTip!),
         ],
       ],
+    );
+  }
+
+  // 今日运行记录卡片（青龙 2.21 及更早的降级方案）
+  //
+  // 这些版本没有 /dashboard/successes|failures，拿不到「哪个任务成功/失败几次」，
+  // 但每次执行都会写 ${logPath}/${脚本名_任务id}/${yyyy-MM-dd-HH-mm-ss-SSS}.log。
+  // 把今天的日志按任务目录聚合，就能列出「今天跑过哪些任务、各几次、最后一次几点」，
+  // 点进去就是该任务的执行日志（失败原因直接可读）。
+  Widget _buildTodayRunsCard(bool isCyber) {
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+    final int runs = (_overview?['todayRuns'] as num?)?.toInt() ?? 0;
+    final int success = (_overview?['todaySuccess'] as num?)?.toInt() ?? 0;
+    final int fail = (_overview?['todayFail'] as num?)?.toInt() ?? 0;
+
+    final List<Widget> children = [];
+
+    // 汇总行：与面板网页版仪表盘的数字同源（overview）
+    children.add(
+      Row(
+        children: [
+          _buildRunsStat(isCyber, '今日执行', '$runs', CyberColors.cyan),
+          _buildRunsStat(
+            isCyber,
+            '今日成功',
+            '$success',
+            CyberColors.neonGreen,
+          ),
+          _buildRunsStat(isCyber, '今日失败', '$fail', CyberColors.neonRed),
+        ],
+      ),
+    );
+
+    children.add(const SizedBox(height: 10));
+
+    if (_todayRunsLoading) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            children: [
+              LoadingWidget(
+                color: ref.watch(themeProvider).primaryColor,
+                size: 14,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '正在统计今日运行日志…',
+                style: TextStyle(fontSize: 12, color: descColor),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_todayRuns.isEmpty) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            '今日暂无运行记录',
+            style: TextStyle(fontSize: 13, color: descColor),
+          ),
+        ),
+      );
+    } else {
+      for (int i = 0; i < _todayRuns.length && i < 5; i++) {
+        if (i > 0) {
+          children.add(
+            Divider(
+              height: 1,
+              thickness: 0.5,
+              color: descColor.withValues(alpha: 0.18),
+            ),
+          );
+        }
+        children.add(_buildTodayRunRow(isCyber, i, _todayRuns[i]));
+      }
+      children.add(const SizedBox(height: 8));
+      children.add(
+        Text(
+          '按今日日志统计 · 共 ${_todayRuns.length} 个任务跑过，点任务可看日志',
+          style: TextStyle(fontSize: 11, color: descColor),
+        ),
+      );
+    }
+
+    return _buildSectionCard(
+      isCyber: isCyber,
+      title: '今日运行记录',
+      icon: CupertinoIcons.clock,
+      trailing:
+          _todayRuns.length > 5
+              ? GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openTaskResult(isSuccess: true),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '全部 ${_todayRuns.length} 个',
+                      style: TextStyle(fontSize: 12, color: descColor),
+                    ),
+                    Icon(CupertinoIcons.chevron_right, size: 11, color: descColor),
+                  ],
+                ),
+              )
+              : null,
+      children: children,
+    );
+  }
+
+  /// 今日运行记录的单行：任务名 + 次数 + 最近执行时刻
+  Widget _buildTodayRunRow(bool isCyber, int index, DashboardTodayRun item) {
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+    final Color titleColor = ref.watch(themeProvider).themeColor.titleColor();
+    final bool canOpenLog = item.cronId > 0;
+    return InkWell(
+      onTap: canOpenLog ? () => _openLog(item.cronId, item.name) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              child: Text(
+                '${index + 1}',
+                style: TextStyle(fontSize: 12, color: descColor),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: isCyber ? 13 : 14,
+                      fontWeight: _globalFw,
+                      color: titleColor,
+                    ),
+                  ),
+                  if (item.lastTime.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      '最近 ${item.lastTime}',
+                      style: TextStyle(fontSize: 11, color: descColor),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${item.count}',
+              style: TextStyle(
+                fontSize: isCyber ? 17 : 16,
+                fontWeight: _globalFw,
+                color: isCyber ? CyberColors.cyan : titleColor,
+              ),
+            ),
+            const SizedBox(width: 2),
+            Text('次', style: TextStyle(fontSize: 11, color: descColor)),
+            if (canOpenLog) ...[
+              const SizedBox(width: 4),
+              Icon(CupertinoIcons.chevron_right, size: 11, color: descColor),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 今日运行记录卡顶部的三格统计
+  Widget _buildRunsStat(
+    bool isCyber,
+    String label,
+    String value,
+    Color accent,
+  ) {
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+    final Color titleColor = ref.watch(themeProvider).themeColor.titleColor();
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: isCyber ? 20 : 19,
+              fontWeight: _globalFw,
+              color: isCyber ? accent : titleColor,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(label, style: TextStyle(fontSize: 11, color: descColor)),
+        ],
+      ),
     );
   }
 

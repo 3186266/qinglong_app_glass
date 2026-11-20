@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qinglong_app/base/app_colors.dart';
+import 'package:qinglong_app/base/http/api.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
 import 'package:qinglong_app/base/theme.dart';
@@ -10,6 +11,7 @@ import 'package:qinglong_app/base/ui/cyber/cyber_background.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/base/ui/log_entry_button.dart';
 import 'package:qinglong_app/module/dashboard/dashboard_models.dart';
+import 'package:qinglong_app/module/dashboard/dashboard_today_runs.dart';
 import 'package:qinglong_app/module/task/intime_log/intime_log_page.dart';
 
 import '../../base/ui/container_page_route.dart';
@@ -44,6 +46,10 @@ class DashboardTaskResultPageState
   /// 明细列表（服务端按次数降序返回）
   List<DashboardTaskResult> _items = const [];
 
+  /// 2.21 及更早版本没有明细接口 → 降级为「今日运行记录」
+  bool _degraded = false;
+  List<DashboardTodayRun> _todayRuns = const [];
+
   @override
   void initState() {
     super.initState();
@@ -60,11 +66,54 @@ class DashboardTaskResultPageState
             ? await api.dashboardSuccesses()
             : await api.dashboardFailures();
     if (!mounted) return;
+
+    final DashboardApiStatus status = DashboardApiStatus.fromResponses([res]);
+    if (status.state == DashboardApiState.ok) {
+      setState(() {
+        _loading = false;
+        _degraded = false;
+        _items = parseDashboardTaskResults(res.bean, isSuccess: widget.isSuccess);
+        _status = status;
+      });
+      return;
+    }
+
+    // 面板没有任务级明细接口：用今日日志聚合出「今天跑过哪些任务」
+    if (status.state == DashboardApiState.missing) {
+      final List<DashboardTodayRun> runs = await _loadTodayRuns(api);
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _degraded = true;
+        _todayRuns = runs;
+        _status = status;
+      });
+      return;
+    }
+
     setState(() {
       _loading = false;
-      _items = parseDashboardTaskResults(res.bean, isSuccess: widget.isSuccess);
-      _status = DashboardApiStatus.fromResponses([res]);
+      _degraded = false;
+      _items = const [];
+      _status = status;
     });
+  }
+
+  /// 拉 /api/logs 今日日志并聚合成运行记录
+  Future<List<DashboardTodayRun>> _loadTodayRuns(Api api) async {
+    try {
+      final logRes = await api.taskLog();
+      final cronRes = await api.crons();
+      final Map<int, String> names = <int, String>{};
+      for (final e in cronRes.bean ?? const []) {
+        final int id = e.id ?? 0;
+        final String name = e.name ?? '';
+        if (id > 0 && name.isNotEmpty) names[id] = name;
+      }
+      return buildTodayRuns(logRes.bean, namesByCronId: names);
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// 打开该任务的最新日志（复用实时日志页）
@@ -91,6 +140,9 @@ class DashboardTaskResultPageState
     Widget body;
     if (_loading) {
       body = _buildLoading();
+    } else if (_degraded) {
+      body =
+          _todayRuns.isEmpty ? _buildEmpty(isCyber) : _buildRunsContent(isCyber);
     } else if (_items.isEmpty) {
       body = _buildEmpty(isCyber);
     } else {
@@ -107,7 +159,10 @@ class DashboardTaskResultPageState
               ? CyberColors.bg
               : ref.watch(themeProvider).themeColor.bg2Color(),
       appBar: QlAppBar(
-        title: widget.isSuccess ? '今日成功' : '今日失败',
+        title:
+            _degraded
+                ? '今日运行记录'
+                : (widget.isSuccess ? '今日成功' : '今日失败'),
         canBack: true,
         actions: [
           CupertinoButton(
@@ -137,11 +192,13 @@ class DashboardTaskResultPageState
 
   Widget _buildEmpty(bool isCyber) {
     // 接口不通时给「错误 + 重试」，接口通但没数据才说「暂无」
-    final bool failed = _status.state != DashboardApiState.ok;
+    final bool failed = _status.state != DashboardApiState.ok && !_degraded;
     final String text =
-        failed
-            ? (_status.message ?? '加载失败')
-            : (widget.isSuccess ? '今日暂无成功的任务' : '今日暂无失败的任务');
+        _degraded
+            ? '今日暂无运行记录'
+            : (failed
+                ? (_status.message ?? '加载失败')
+                : (widget.isSuccess ? '今日暂无成功的任务' : '今日暂无失败的任务'));
 
     return Center(
       child: Padding(
@@ -213,8 +270,157 @@ class DashboardTaskResultPageState
     );
   }
 
-  Widget _buildSummary(bool isCyber) {
-    final int total = _items.fold<int>(0, (sum, e) => sum + e.count);
+  /// 降级模式：今日运行记录列表（2.21 及更早）
+  Widget _buildRunsContent(bool isCyber) {
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.only(
+          left: AppleColors.spaceMd,
+          right: AppleColors.spaceMd,
+          top: AppleColors.spaceMd,
+          bottom: MediaQuery.of(context).viewPadding.bottom + 30,
+        ),
+        itemCount: _todayRuns.length + 1,
+        separatorBuilder: (_, _) => const SizedBox(height: AppleColors.spaceMd),
+        itemBuilder: (context, index) {
+          if (index == 0) return _buildRunsSummary(isCyber);
+          return _buildRunCard(isCyber, index - 1);
+        },
+      ),
+    );
+  }
+
+  Widget _buildRunsSummary(bool isCyber) {
+    final int runs = _todayRuns.fold<int>(0, (sum, e) => sum + e.count);
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '今日运行',
+                style: TextStyle(fontSize: 13, color: descColor),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '$runs',
+                style: TextStyle(
+                  fontSize: isCyber ? 18 : 16,
+                  fontWeight: _globalFw,
+                  color: isCyber ? CyberColors.cyan : AppleColors.textPrimary,
+                ),
+              ),
+              Text(
+                ' 次 · ${_todayRuns.length} 个任务',
+                style: TextStyle(fontSize: 13, color: descColor),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '本面板未提供任务级成败明细，以下按今日运行日志统计，点任务可看日志',
+            style: TextStyle(fontSize: 11, color: descColor, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 单条运行记录：任务名 + 最近执行时刻 + 今日次数 + 日志入口
+  Widget _buildRunCard(bool isCyber, int index) {
+    final DashboardTodayRun item = _todayRuns[index];
+    final bool canOpenLog = item.cronId > 0;
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+
+    return CapsuleGlowCard.continuous(
+      isCyber: isCyber,
+      isPinned: false,
+      padding: const EdgeInsets.all(14),
+      child: InkWell(
+        onTap: canOpenLog ? () => _openRunLog(item) : null,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 24,
+              child: Text(
+                '${index + 1}',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: _globalFw,
+                  color: descColor,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: isCyber ? 14 : 15,
+                      fontWeight: _globalFw,
+                      color: ref.watch(themeProvider).themeColor.titleColor(),
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    item.lastTime.isEmpty
+                        ? '今日已运行 ${item.count} 次'
+                        : '最近 ${item.lastTime} · 今日 ${item.count} 次',
+                    style: TextStyle(fontSize: 12, color: descColor),
+                  ),
+                  const SizedBox(height: 8),
+                  LogEntryButton(
+                    enabled: canOpenLog,
+                    onTap: () => _openRunLog(item),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  '${item.count}',
+                  style: TextStyle(
+                    fontSize: isCyber ? 20 : 18,
+                    fontWeight: _globalFw,
+                    color: isCyber ? CyberColors.cyan : AppleColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text('次', style: TextStyle(fontSize: 12, color: descColor)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 打开今日运行记录对应的任务日志
+  void _openRunLog(DashboardTodayRun item) {
+    if (item.cronId <= 0) return;
+    Navigator.of(context).push(
+      ContainerPageRoute(
+        builder:
+            (context) => InTimeLogPage('${item.cronId}', true, item.name),
+      ),
+    );
+  }
+
+  Widget _buildSummary(bool isCyber) {    final int total = _items.fold<int>(0, (sum, e) => sum + e.count);
     final Color descColor = ref.watch(themeProvider).themeColor.descColor();
     final Color accent =
         widget.isSuccess ? CyberColors.neonGreen : CyberColors.neonRed;

@@ -73,7 +73,7 @@ enum DashboardApiState {
   /// 正常
   ok,
 
-  /// 面板版本过低 / 路由不存在（404）
+  /// 路由不存在（404）：面板未提供任务级明细接口（青龙 2.21 及更早）
   missing,
 
   /// 无权限（403，通常是 client_id/secret 登录的开放应用缺 dashboard scope）
@@ -108,7 +108,7 @@ class DashboardApiStatus {
     if (missing) {
       return const DashboardApiStatus(
         DashboardApiState.missing,
-        '当前面板版本过低（需青龙 2.22 及以上）才提供仪表盘统计接口',
+        '当前面板未提供任务级明细，已按今日运行日志统计',
       );
     }
     final String msg =
