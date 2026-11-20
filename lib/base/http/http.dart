@@ -737,13 +737,17 @@ class Http {
     }
   }
 
-  /// 上传文件（用于数据导入 .tgz 压缩包恢复）
+  /// 上传文件（数据导入 .tgz 用 PUT，脚本上传用 POST）
   /// [uri] 请求路径，[filePath] 本地文件路径，[fieldName] 上传字段名
+  /// [method] 请求方法，默认 PUT（/api/data/import 用 PUT；/api/scripts 用 POST）
+  /// [extraFields] 与文件一起提交的普通表单字段（如青龙脚本上传的 filename/path）
   /// 返回标准 HttpResponse，包含服务器解压输出信息
   Future<HttpResponse<T>> uploadFile<T>(
     String uri,
     String filePath,
     String fieldName, {
+    String method = "PUT",
+    Map<String, String> extraFields = const {},
     bool reloginRetry = false,
     void Function(int sent, int total)? onSendProgress,
     Duration sendTimeout = const Duration(minutes: 30),
@@ -751,19 +755,30 @@ class Http {
     try {
       _init();
       final formdata = FormData.fromMap({
+        ...extraFields,
         fieldName: await MultipartFile.fromFile(filePath),
       });
 
-      final response = await _dio!.put(
-        uri,
-        data: formdata,
-        options: Options(
-          // 全选备份的 .tgz 上传可达 GB 级，全局 15s sendTimeout 会掐断
-          sendTimeout: sendTimeout,
-          receiveTimeout: sendTimeout,
-        ),
-        onSendProgress: onSendProgress,
+      final options = Options(
+        // 全选备份的 .tgz 上传可达 GB 级，全局 15s sendTimeout 会掐断
+        sendTimeout: sendTimeout,
+        receiveTimeout: sendTimeout,
       );
+
+      final response =
+          method.toUpperCase() == "POST"
+              ? await _dio!.post(
+                uri,
+                data: formdata,
+                options: options,
+                onSendProgress: onSendProgress,
+              )
+              : await _dio!.put(
+                uri,
+                data: formdata,
+                options: options,
+                onSendProgress: onSendProgress,
+              );
 
       _invalidateRelatedCache(uri);
 
@@ -775,6 +790,8 @@ class Http {
           uri,
           filePath,
           fieldName,
+          method: method,
+          extraFields: extraFields,
           reloginRetry: true,
           onSendProgress: onSendProgress,
           sendTimeout: sendTimeout,
@@ -791,6 +808,8 @@ class Http {
           uri,
           filePath,
           fieldName,
+          method: method,
+          extraFields: extraFields,
           reloginRetry: true,
           onSendProgress: onSendProgress,
           sendTimeout: sendTimeout,

@@ -10,6 +10,9 @@ import UniformTypeIdentifiers
   /// 等待 UIDocumentPickerViewController 回调的 FlutterResult
   private var filePickerResult: FlutterResult?
 
+  /// 本次选择是否为多选（pickFiles），决定回调回传单个 map 还是数组
+  private var filePickerMultiple = false
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -27,7 +30,9 @@ import UniformTypeIdentifiers
           return
         }
         if call.method == "pickFile" {
-          self.presentFilePicker(from: controller, result: result)
+          self.presentFilePicker(from: controller, multiple: false, result: result)
+        } else if call.method == "pickFiles" {
+          self.presentFilePicker(from: controller, multiple: true, result: result)
         } else {
           result(FlutterMethodNotImplemented)
         }
@@ -37,13 +42,18 @@ import UniformTypeIdentifiers
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  private func presentFilePicker(from controller: UIViewController, result: @escaping FlutterResult) {
+  private func presentFilePicker(
+    from controller: UIViewController,
+    multiple: Bool,
+    result: @escaping FlutterResult
+  ) {
     // 上一次选择未结束，直接拒绝新的请求，避免 result 被覆盖导致挂起
     if filePickerResult != nil {
       result(nil)
       return
     }
     filePickerResult = result
+    filePickerMultiple = multiple
 
     let picker: UIDocumentPickerViewController
     if #available(iOS 14.0, *) {
@@ -58,7 +68,7 @@ import UniformTypeIdentifiers
       )
     }
     picker.delegate = self
-    picker.allowsMultipleSelection = false
+    picker.allowsMultipleSelection = multiple
     controller.present(picker, animated: true)
   }
 
@@ -88,6 +98,15 @@ import UniformTypeIdentifiers
   private func finishPicker(_ payload: [String: String]?) {
     let result = filePickerResult
     filePickerResult = nil
+    filePickerMultiple = false
+    result?(payload)
+  }
+
+  /// 多选结束：回传 [{path, name}]，未选到文件时回传空数组
+  private func finishPickerList(_ payload: [[String: String]]) {
+    let result = filePickerResult
+    filePickerResult = nil
+    filePickerMultiple = false
     result?(payload)
   }
 }
@@ -97,6 +116,10 @@ extension AppDelegate: UIDocumentPickerDelegate {
     _ controller: UIDocumentPickerViewController,
     didPickDocumentsAt urls: [URL]
   ) {
+    if filePickerMultiple {
+      finishPickerList(urls.compactMap { copyToSandbox($0) })
+      return
+    }
     guard let url = urls.first else {
       finishPicker(nil)
       return
@@ -105,6 +128,11 @@ extension AppDelegate: UIDocumentPickerDelegate {
   }
 
   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-    finishPicker(nil)
+    let multiple = filePickerMultiple
+    if multiple {
+      finishPickerList([])
+    } else {
+      finishPicker(nil)
+    }
   }
 }

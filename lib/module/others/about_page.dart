@@ -235,8 +235,8 @@ class _AboutPageState extends ConsumerState<AboutPage>
   }
 
   void getInfo() async {
-    String version = "3.0.8";
-    versionCode = "308";
+    String version = "3.0.9";
+    versionCode = "309";
     desc = version;
     setState(() {});
   }

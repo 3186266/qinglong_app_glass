@@ -48,6 +48,8 @@ class MainActivity : FlutterActivity() {
     private val FLOATING_CLOCK_CHANNEL = "com.qlapp.qinglong_app/floating_clock"
     private val LIFECYCLE_CHANNEL = "com.qlapp.qinglong_app/lifecycle"
     private var filePickerResult: MethodChannel.Result? = null
+    /// 本次文件选择是否多选（pickFiles）：决定返回单个 map 还是数组
+    private var filePickerMultiple = false
     private var webViewResult: MethodChannel.Result? = null
     private val FILE_PICKER_REQUEST_CODE = 1001
     private val WEBVIEW_REQUEST_CODE = 1002
@@ -147,11 +149,14 @@ class MainActivity : FlutterActivity() {
         }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FILE_PICKER_CHANNEL).setMethodCallHandler { call, result ->
-            if (call.method == "pickFile") {
+            if (call.method == "pickFile" || call.method == "pickFiles") {
                 filePickerResult = result
+                filePickerMultiple = call.method == "pickFiles"
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
+                    // 多选：脚本管理页一次上传多个脚本
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, filePickerMultiple)
                 }
                 startActivityForResult(intent, FILE_PICKER_REQUEST_CODE)
             } else {
@@ -312,49 +317,78 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// 文件选择结果统一处理：单选回传 map，多选回传 list
+    private fun handleFilePickerResult(resultCode: Int, data: Intent?) {
+        val res = filePickerResult
+        val multiple = filePickerMultiple
+        filePickerResult = null
+        filePickerMultiple = false
+        if (res == null) return
+
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            res.success(if (multiple) ArrayList<HashMap<String, String>>() else null)
+            return
+        }
+
+        // 多选时 uri 在 clipData 里；单选回退到 data.data
+        val uris = ArrayList<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        }
+        data.data?.let { if (uris.isEmpty()) uris.add(it) }
+
+        val maps = ArrayList<HashMap<String, String>>()
+        uris.forEachIndexed { index, uri ->
+            copyUriToCache(uri, index)?.let { maps.add(it) }
+        }
+
+        if (multiple) {
+            res.success(maps)
+        } else {
+            res.success(maps.firstOrNull())
+        }
+    }
+
+    /// 把 content:// 拷贝到应用缓存目录，返回 {path, name}；失败返回 null
+    private fun copyUriToCache(uri: Uri, index: Int): HashMap<String, String>? {
+        var fileName = "unknown"
+        if (uri.scheme == "content") {
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val nameIndex = it.getColumnIndex("_display_name")
+                    if (nameIndex >= 0) {
+                        fileName = it.getString(nameIndex) ?: "unknown"
+                    }
+                }
+            }
+        }
+        return try {
+            val tempDir = File(cacheDir, "picked_files")
+            if (!tempDir.exists()) tempDir.mkdirs()
+            // 加序号前缀：多选时同名文件不会互相覆盖
+            val tempFile = File(tempDir, "${index}_$fileName")
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            val resultMap = HashMap<String, String>()
+            resultMap["path"] = tempFile.absolutePath
+            resultMap["name"] = fileName
+            resultMap
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == FILE_PICKER_REQUEST_CODE) {
-            if (resultCode == Activity.RESULT_OK && data?.data != null) {
-                val uri: Uri = data.data!!
-                
-                // Get file name
-                var fileName = "unknown"
-                if (uri.scheme == "content") {
-                    val cursor = contentResolver.query(uri, null, null, null, null)
-                    cursor?.use {
-                        if (it.moveToFirst()) {
-                            val nameIndex = it.getColumnIndex("_display_name")
-                            if (nameIndex >= 0) {
-                                fileName = it.getString(nameIndex) ?: "unknown"
-                            }
-                        }
-                    }
-                }
-                
-                // Copy content URI to temp file
-                try {
-                    val tempDir = File(cacheDir, "picked_files")
-                    if (!tempDir.exists()) tempDir.mkdirs()
-                    val tempFile = File(tempDir, fileName)
-                    
-                    contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    
-                    val resultMap = HashMap<String, String>()
-                    resultMap["path"] = tempFile.absolutePath
-                    resultMap["name"] = fileName
-                    filePickerResult?.success(resultMap)
-                } catch (e: Exception) {
-                    filePickerResult?.success(null)
-                }
-            } else {
-                filePickerResult?.success(null)
-            }
-            filePickerResult = null
+            handleFilePickerResult(resultCode, data)
         }
         if (requestCode == WEBVIEW_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK && data != null) {

@@ -18,6 +18,7 @@ import 'package:qinglong_app/base/ui/sort_nav_button.dart';
 import 'package:qinglong_app/base/ui/sort_triangle.dart';
 import 'package:qinglong_app/base/ui/tree/models/script_data.dart';
 import 'package:qinglong_app/module/others/scripts/folder_add_page.dart';
+import 'package:qinglong_app/module/others/scripts/script_upload_local_page.dart';
 import 'package:qinglong_app/module/others/scripts/script_upload_page.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/sp_utils.dart';
@@ -158,6 +159,12 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
                     title: "新增文件",
                     onTap: () {
                       addScript();
+                    },
+                  ),
+                  CupertinoSheer(
+                    title: "上传脚本",
+                    onTap: () {
+                      uploadLocalScript();
                     },
                   ),
                   addDivider(),
@@ -442,6 +449,21 @@ class _ScriptPageState extends ConsumerState<ScriptPage>
     Navigator.of(context)
         .push(
           ContainerPageRoute(builder: (context) => const ScriptUploadPage()),
+        )
+        .then((value) {
+          if (value != null && value == true) {
+            loadData();
+          }
+        });
+  }
+
+  /// 从手机本地选择脚本文件上传（可多选，走面板 multipart 上传接口）
+  void uploadLocalScript() {
+    Navigator.of(context)
+        .push(
+          ContainerPageRoute(
+            builder: (context) => const ScriptUploadLocalPage(),
+          ),
         )
         .then((value) {
           if (value != null && value == true) {

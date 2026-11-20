@@ -959,6 +959,29 @@ class Api {
     );
   }
 
+  /// 上传本地脚本文件（multipart，二进制安全，图片/压缩包也能传）
+  ///
+  /// 青龙 POST /api/scripts 在带 file 时直接 `fs.rename` 落盘，
+  /// 比 addScript 读成字符串再写更可靠（大文件、非 UTF-8 内容都不会坏）。
+  /// [filename] 落盘文件名，[path] 面板 scripts 下的相对目录（空 = 根目录）。
+  Future<HttpResponse<NullResponse>> uploadScriptFile(
+    String filePath, {
+    required String filename,
+    String path = "",
+    void Function(int sent, int total)? onSendProgress,
+  }) async {
+    return await getIt<Http>(instanceName: index.toString()).uploadFile<
+      NullResponse
+    >(
+      getIt<Url>(instanceName: index.toString()).addScript,
+      filePath,
+      "file",
+      method: "POST",
+      extraFields: {"filename": filename, "path": path},
+      onSendProgress: onSendProgress,
+    );
+  }
+
   /// 配置文件"另存为"（origin → dest），用于曲线删除：
   /// 青龙没有删除配置文件接口，但 POST /scripts 的另存为分支会在写入新文件前
   /// `rmPath(origin)`，因此把 dest 指向配置目录下已存在的锚点目录，即可只留下
