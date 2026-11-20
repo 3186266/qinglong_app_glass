@@ -42,72 +42,91 @@ class Api {
     ).get<SystemBean>(Url.system, {});
   }
 
-  Future<HttpResponse<String>> dashboardOverview() async {
+  // 仪表盘聚合接口统一不走 HttpCache：任务一跑，今日执行/成功/失败、Top 榜、
+  // 运行态全都会变；走 1 分钟缓存会让「刚跑完的任务」在仪表盘上看不到，
+  // 也会让下拉刷新拿到上一次的结果。默认 useCache=false，需要缓存的调用方显式开启。
+  Future<HttpResponse<String>> dashboardOverview({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardOverview,
       {},
+      useCache: useCache,
     );
   }
 
-  Future<HttpResponse<String>> dashboardSystem() async {
+  Future<HttpResponse<String>> dashboardSystem({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardSystem,
       {},
+      useCache: useCache,
     );
   }
 
-  Future<HttpResponse<String>> dashboardRuntime() async {
+  Future<HttpResponse<String>> dashboardRuntime({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardRuntime,
       {},
+      useCache: useCache,
     );
   }
 
   // 近 N 日趋势（默认 7 天）
-  Future<HttpResponse<String>> dashboardTrend({int days = 7}) async {
+  Future<HttpResponse<String>> dashboardTrend({
+    int days = 7,
+    bool useCache = false,
+  }) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardTrend,
       {"days": days.toString()},
+      useCache: useCache,
     );
   }
 
   // 今日耗时 Top 5
-  Future<HttpResponse<String>> dashboardTopTime() async {
+  Future<HttpResponse<String>> dashboardTopTime({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardTopTime,
       {},
+      useCache: useCache,
     );
   }
 
   // 今日执行次数 Top 5
-  Future<HttpResponse<String>> dashboardTopCount() async {
+  Future<HttpResponse<String>> dashboardTopCount({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardTopCount,
       {},
+      useCache: useCache,
     );
   }
 
   // 标签统计
-  Future<HttpResponse<String>> dashboardLabels() async {
+  Future<HttpResponse<String>> dashboardLabels({bool useCache = false}) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardLabels,
       {},
+      useCache: useCache,
     );
   }
 
   // 今日成功任务明细（按成功次数降序）
-  Future<HttpResponse<String>> dashboardSuccesses() async {
+  Future<HttpResponse<String>> dashboardSuccesses({
+    bool useCache = false,
+  }) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardSuccesses,
       {},
+      useCache: useCache,
     );
   }
 
   // 今日失败任务明细（按失败次数降序）
-  Future<HttpResponse<String>> dashboardFailures() async {
+  Future<HttpResponse<String>> dashboardFailures({
+    bool useCache = false,
+  }) async {
     return await getIt<Http>(instanceName: index.toString()).get<String>(
       getIt<Url>(instanceName: index.toString()).dashboardFailures,
       {},
+      useCache: useCache,
     );
   }
 

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
@@ -6,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qinglong_app/base/app_colors.dart';
 import 'package:qinglong_app/base/http/api.dart';
+import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/routes.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
@@ -14,6 +14,7 @@ import 'package:qinglong_app/base/ui/capsule_glow_card.dart';
 import 'package:qinglong_app/base/ui/cyber/cyber_background.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/base/ui/log_entry_button.dart';
+import 'package:qinglong_app/module/dashboard/dashboard_models.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/module/task/intime_log/intime_log_page.dart';
 
@@ -47,8 +48,37 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
   List<Map<String, dynamic>> _topCount = [];
   // 标签统计
   List<Map<String, dynamic>> _labels = [];
+  // 今日成功 / 失败任务明细：直接铺在仪表盘上，不必先点数字才看得到
+  List<DashboardTaskResult> _successes = const [];
+  List<DashboardTaskResult> _failures = const [];
+  // 明细接口可用性（面板 <2.22 / 开放应用无 dashboard 权限 的提示各不相同）
+  DashboardApiStatus _detailStatus = DashboardApiStatus.ok;
+  // 面板过低（dashboard 接口整体缺失）时用 /api/crons 兜底出的基础统计
+  int? _fallbackTotal;
+  int? _fallbackEnabled;
+  int? _fallbackRunning;
+  String? _fallbackTip;
   // 版本号
   String _version = '';
+
+  /// 成功明细里的次数之和
+  int get _successTotal => _successes.fold<int>(0, (sum, e) => sum + e.count);
+
+  /// 失败明细里的次数之和
+  int get _failTotal => _failures.fold<int>(0, (sum, e) => sum + e.count);
+
+  /// 卡片上展示的今日成功次数：优先服务端概览口径，明细更大时以明细为准
+  /// （两者都来自 CrontabStat，正常应一致；取大值可避免任一接口短暂滞后时显示 0）
+  int get _todaySuccessValue {
+    final int fromOverview =
+        (_overview?['todaySuccess'] as num?)?.toInt() ?? 0;
+    return fromOverview > _successTotal ? fromOverview : _successTotal;
+  }
+
+  int get _todayFailValue {
+    final int fromOverview = (_overview?['todayFail'] as num?)?.toInt() ?? 0;
+    return fromOverview > _failTotal ? fromOverview : _failTotal;
+  }
 
   @override
   void initState() {
@@ -74,7 +104,8 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
 
     final api = SingleAccountPageState.ofApi(context);
 
-    // 主体 6 个快接口并行加载，返回后立即显示，不等待 system
+    // 8 个接口并行：主体 6 个负责概览/趋势/Top/标签，末尾 2 个是今日成功/失败明细。
+    // 明细与概览同批发出，仪表盘一屏就能看到「今天哪些任务成功、哪些失败」。
     final results = await Future.wait([
       api.dashboardOverview(),
       api.dashboardRuntime(),
@@ -82,6 +113,8 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       api.dashboardTopTime(),
       api.dashboardTopCount(),
       api.dashboardLabels(),
+      api.dashboardSuccesses(),
+      api.dashboardFailures(),
     ]);
 
     final overviewRes = results[0];
@@ -90,15 +123,26 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     final topTimeRes = results[3];
     final topCountRes = results[4];
     final labelsRes = results[5];
+    final successRes = results[6];
+    final failRes = results[7];
 
+    final DashboardApiStatus detailStatus = DashboardApiStatus.fromResponses([
+      successRes,
+      failRes,
+    ]);
+
+    if (!mounted) return;
     setState(() {
       _loading = false;
-      _overview = _parseObject(overviewRes.bean);
-      _runtime = _parseObject(runtimeRes.bean);
-      _trend = _parseList(trendRes.bean);
-      _topTime = _parseList(topTimeRes.bean);
-      _topCount = _parseList(topCountRes.bean);
-      _labels = _parseList(labelsRes.bean);
+      _overview = parseDashboardObject(overviewRes.bean);
+      _runtime = parseDashboardObject(runtimeRes.bean);
+      _trend = parseDashboardList(trendRes.bean);
+      _topTime = parseDashboardList(topTimeRes.bean);
+      _topCount = parseDashboardList(topCountRes.bean);
+      _labels = parseDashboardList(labelsRes.bean);
+      _successes = parseDashboardTaskResults(successRes.bean, isSuccess: true);
+      _failures = parseDashboardTaskResults(failRes.bean, isSuccess: false);
+      _detailStatus = detailStatus;
       if (_overview != null ||
           _runtime != null ||
           _trend.isNotEmpty ||
@@ -122,8 +166,56 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       }
     });
 
+    // 面板 <2.22：dashboard 接口整体不存在。此时用 /api/crons 兜底出
+    // 总任务/已启用/运行中，至少让仪表盘不是一页空白或一句报错。
+    if (_overview == null) {
+      await _loadCronsFallback(api, overviewRes);
+    }
+
     // 含 CPU/磁盘的 system 接口独立加载，返回后原位更新资源卡片
     await _loadSystem(api);
+  }
+
+  /// overview 不可用时的兜底：/api/crons 是所有青龙版本都有的接口
+  ///
+  /// 面板过低（404）与无权限（403）提示语不同，不能都说成「版本过低」。
+  Future<void> _loadCronsFallback(
+    Api api,
+    HttpResponse<String> overviewRes,
+  ) async {
+    try {
+      final res = await api.crons();
+      if (!mounted) return;
+      final list = res.bean;
+      if (!res.success || list == null) return;
+      final int enabled = list.where((e) => (e.isDisabled ?? 0) == 0).length;
+      final int running = list.where((e) => e.status == 1).length;
+      final DashboardApiStatus status = DashboardApiStatus.fromResponses([
+        overviewRes,
+      ]);
+      final String tip = switch (status.state) {
+        DashboardApiState.denied =>
+          '开放应用未授予 dashboard 权限（403），今日统计不可用；'
+              '请在青龙「应用」中为该应用勾选 dashboard 权限',
+        DashboardApiState.missing =>
+          '当前面板未提供仪表盘统计接口（需青龙 2.22 及以上），'
+              '以下为任务列表实时统计，今日执行/成功/失败不可用',
+        _ =>
+          '仪表盘统计接口请求失败（${status.message ?? '网络异常'}），'
+              '以下为任务列表实时统计',
+      };
+      setState(() {
+        _fallbackTotal = list.length;
+        _fallbackEnabled = enabled;
+        _fallbackRunning = running;
+        _fallbackTip = tip;
+        _hasData = true;
+        // 有兜底数据就不再整页报错
+        _errorMsg = null;
+      });
+    } catch (_) {
+      // 兜底失败则保留原错误提示
+    }
   }
 
   Future<void> _loadSystem(Api api) async {
@@ -131,47 +223,10 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       final systemRes = await api.dashboardSystem();
       if (!mounted) return;
       setState(() {
-        _system = _parseObject(systemRes.bean);
+        _system = parseDashboardObject(systemRes.bean);
       });
     } catch (_) {
       // 网络波动或老版本无此接口时忽略，保留 _system 旧值（或隐藏资源卡片）
-    }
-  }
-
-  Map<String, dynamic>? _parseObject(String? raw) {
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) {
-        final data = decoded['data'];
-        if (data is Map<String, dynamic>) return data;
-        return decoded;
-      }
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  List<Map<String, dynamic>> _parseList(String? raw) {
-    if (raw == null || raw.isEmpty) return [];
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) {
-        final data = decoded['data'];
-        if (data is List) {
-          return data.whereType<Map<String, dynamic>>().toList(growable: false);
-        }
-        return const [];
-      }
-      if (decoded is List) {
-        return decoded.whereType<Map<String, dynamic>>().toList(
-          growable: false,
-        );
-      }
-      return [];
-    } catch (_) {
-      return [];
     }
   }
 
@@ -257,7 +312,14 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     // 是仪表盘滑动掉帧的主因。
     final List<Widget> cards = [
       _buildVersionCard(isCyber),
-      if (_overview != null) _buildOverviewCard(isCyber),
+      if (_overview != null || _fallbackTotal != null)
+        _buildOverviewCard(isCyber),
+      // 今日成功 / 失败任务直接上屏（原实现只在点数字后才看得到明细）。
+      // 面板整体过低时不重复刷两块告警，概览卡片的兜底提示已说明原因。
+      if (_detailStatus.state == DashboardApiState.ok || _overview != null) ...[
+        _buildTodayResultCard(isCyber, isSuccess: true),
+        _buildTodayResultCard(isCyber, isSuccess: false),
+      ],
       if (_trend.isNotEmpty) _buildTrendCard(isCyber),
       if (_topTime.isNotEmpty) _buildTopTimeCard(isCyber),
       if (_topCount.isNotEmpty) _buildTopCountCard(isCyber),
@@ -337,15 +399,36 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
   }
 
   // 任务概览卡片
+  //
+  // 数据来源有两种：
+  // 1. 正常：/api/dashboard/overview（青龙 2.22+）
+  // 2. 面板过低（接口 404）：用 /api/crons 兜底，只显示总任务/已启用/运行中，
+  //    今日执行/成功/失败三格显示「-」并在卡片底部说明原因，不再整页报错。
   Widget _buildOverviewCard(bool isCyber) {
-    final total = (_overview!['total'] as num?)?.toInt() ?? 0;
-    final enabled = (_overview!['enabled'] as num?)?.toInt() ?? 0;
-    final disabled = (_overview!['disabled'] as num?)?.toInt() ?? 0;
-    final todayRuns = (_overview!['todayRuns'] as num?)?.toInt() ?? 0;
-    final todaySuccess = (_overview!['todaySuccess'] as num?)?.toInt() ?? 0;
-    final todayFail = (_overview!['todayFail'] as num?)?.toInt() ?? 0;
-    final successRate = _overview!['successRate']?.toString() ?? '0';
-    final avgTime = (_overview!['avgTime'] as num?)?.toInt() ?? 0;
+    final bool fromApi = _overview != null;
+    final total =
+        fromApi
+            ? ((_overview!['total'] as num?)?.toInt() ?? 0)
+            : (_fallbackTotal ?? 0);
+    final enabled =
+        fromApi
+            ? ((_overview!['enabled'] as num?)?.toInt() ?? 0)
+            : (_fallbackEnabled ?? 0);
+    final disabled =
+        fromApi
+            ? ((_overview!['disabled'] as num?)?.toInt() ?? 0)
+            : ((_fallbackTotal ?? 0) - (_fallbackEnabled ?? 0));
+    final String todayRuns =
+        fromApi ? '${(_overview!['todayRuns'] as num?)?.toInt() ?? 0}' : '-';
+    // 明细接口可用时以明细求和兜底，避免概览统计滞后时今日成功/失败显示 0
+    final String todaySuccess =
+        fromApi ? '$_todaySuccessValue' : (_successTotal > 0 ? '$_successTotal' : '-');
+    final String todayFail =
+        fromApi ? '$_todayFailValue' : (_failTotal > 0 ? '$_failTotal' : '-');
+    final successRate = fromApi ? (_overview!['successRate']?.toString() ?? '0') : '-';
+    final avgTime = fromApi ? ((_overview!['avgTime'] as num?)?.toInt() ?? 0) : 0;
+    final bool canOpenDetail =
+        _detailStatus.state == DashboardApiState.ok || !fromApi;
 
     return _buildSectionCard(
       isCyber: isCyber,
@@ -382,7 +465,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
               child: _buildStatCell(
                 isCyber,
                 '今日执行',
-                '$todayRuns',
+                todayRuns,
                 CyberColors.cyan,
               ),
             ),
@@ -390,26 +473,26 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
               child: _buildStatCell(
                 isCyber,
                 '今日成功',
-                '$todaySuccess',
+                todaySuccess,
                 CyberColors.neonGreen,
                 // 与网页版一致：点击查看今日成功任务明细
-                onTap: () => Navigator.of(context).pushNamed(
-                  Routes.routeDashboardTaskResult,
-                  arguments: true,
-                ),
+                onTap:
+                    canOpenDetail
+                        ? () => _openTaskResult(isSuccess: true)
+                        : null,
               ),
             ),
             Expanded(
               child: _buildStatCell(
                 isCyber,
                 '今日失败',
-                '$todayFail',
+                todayFail,
                 CyberColors.neonRed,
                 // 与网页版一致：点击查看今日失败任务明细
-                onTap: () => Navigator.of(context).pushNamed(
-                  Routes.routeDashboardTaskResult,
-                  arguments: false,
-                ),
+                onTap:
+                    canOpenDetail
+                        ? () => _openTaskResult(isSuccess: false)
+                        : null,
               ),
             ),
           ],
@@ -421,7 +504,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
               child: _buildStatCell(
                 isCyber,
                 '成功率',
-                '$successRate%',
+                fromApi ? '$successRate%' : '-',
                 CyberColors.neonGreen,
               ),
             ),
@@ -429,14 +512,274 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
               child: _buildStatCell(
                 isCyber,
                 '平均耗时',
-                _formatTime(avgTime),
+                fromApi ? _formatTime(avgTime) : '-',
                 CyberColors.cyan,
               ),
             ),
-            const Expanded(child: SizedBox()),
+            Expanded(
+              child: _buildStatCell(
+                isCyber,
+                '运行中',
+                '${_runtime?['runningCount'] ?? _fallbackRunning ?? 0}',
+                CyberColors.neonYellow,
+              ),
+            ),
           ],
         ),
+        if (!fromApi && _fallbackTip != null) ...[
+          const SizedBox(height: 12),
+          _buildNotice(isCyber, _fallbackTip!),
+        ],
       ],
+    );
+  }
+
+  // 今日成功 / 今日失败任务卡片
+  //
+  // 数据源：/api/dashboard/successes | /api/dashboard/failures
+  // 明细直接铺在仪表盘上（最多 5 行），点「全部明细」进完整列表页。
+  Widget _buildTodayResultCard(bool isCyber, {required bool isSuccess}) {
+    final List<DashboardTaskResult> items =
+        isSuccess ? _successes : _failures;
+    final int totalCount = isSuccess ? _successTotal : _failTotal;
+    final Color accent =
+        isSuccess ? CyberColors.neonGreen : CyberColors.neonRed;
+    final Color titleColor = ref.watch(themeProvider).themeColor.titleColor();
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+
+    final List<Widget> children = [];
+
+    if (_detailStatus.state != DashboardApiState.ok) {
+      // 面板过低 / 无权限 / 网络错误：分别给出可执行的提示
+      children.add(_buildNotice(isCyber, _detailStatus.message ?? '明细加载失败'));
+    } else if (items.isEmpty) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            isSuccess ? '今日暂无成功的任务' : '今日暂无失败的任务',
+            style: TextStyle(fontSize: 13, color: descColor),
+          ),
+        ),
+      );
+    } else {
+      for (int i = 0; i < items.length && i < 5; i++) {
+        if (i > 0) {
+          children.add(
+            Divider(
+              height: 1,
+              thickness: 0.5,
+              color: descColor.withValues(alpha: 0.18),
+            ),
+          );
+        }
+        children.add(
+          _buildTodayResultRow(isCyber, i, items[i], isSuccess: isSuccess),
+        );
+      }
+    }
+
+    return _buildSectionCard(
+      isCyber: isCyber,
+      title: isSuccess ? '今日成功任务' : '今日失败任务',
+      icon:
+          isSuccess
+              ? CupertinoIcons.checkmark_seal
+              : CupertinoIcons.exclamationmark_triangle,
+      trailing:
+          items.length > 5
+              ? GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openTaskResult(isSuccess: isSuccess),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '全部 ${items.length} 个',
+                      style: TextStyle(fontSize: 12, color: descColor),
+                    ),
+                    Icon(CupertinoIcons.chevron_right, size: 11, color: descColor),
+                  ],
+                ),
+              )
+              : null,
+      children: [
+        // 顶部结论行：今日成功/失败总次数（口径与概览卡一致）
+        Row(
+          children: [
+            Text(
+              '$totalCount',
+              style: TextStyle(
+                fontSize: isCyber ? 22 : 20,
+                fontWeight: _globalFw,
+                color: isCyber ? accent : titleColor,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '次',
+                style: TextStyle(fontSize: 12, color: descColor),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                items.isEmpty ? '' : '共 ${items.length} 个任务',
+                style: TextStyle(fontSize: 12, color: descColor),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ...children,
+      ],
+    );
+  }
+
+  /// 明细单行：序号 + 任务名（可带「已删除」）+ 命令 + 次数 + 日志入口
+  Widget _buildTodayResultRow(
+    bool isCyber,
+    int index,
+    DashboardTaskResult item, {
+    required bool isSuccess,
+  }) {
+    final Color descColor = ref.watch(themeProvider).themeColor.descColor();
+    final Color titleColor = ref.watch(themeProvider).themeColor.titleColor();
+    final Color accent =
+        isSuccess ? CyberColors.neonGreen : CyberColors.neonRed;
+    final bool canOpenLog = !item.deleted && item.id > 0;
+    return InkWell(
+      onTap:
+          canOpenLog
+              ? () => _openLog(item.id, item.name, command: item.command)
+              : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 18,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Text(
+                  '${index + 1}',
+                  style: TextStyle(fontSize: 12, color: descColor),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          item.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: isCyber ? 13 : 14,
+                            fontWeight: _globalFw,
+                            color: titleColor,
+                          ),
+                        ),
+                      ),
+                      if (item.deleted) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 0.5,
+                          ),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: descColor.withValues(alpha: 0.5),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: Text(
+                            '已删除',
+                            style: TextStyle(fontSize: 10, color: descColor),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (item.command.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      item.command,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: descColor),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${item.count}',
+              style: TextStyle(
+                fontSize: isCyber ? 15 : 14,
+                fontWeight: _globalFw,
+                color: isCyber ? accent : titleColor,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '次',
+                style: TextStyle(fontSize: 11, color: descColor),
+              ),
+            ),
+            const SizedBox(width: 10),
+            LogEntryButton(
+              label: '日志',
+              fontSize: 11,
+              enabled: canOpenLog,
+              onTap: () => _openLog(item.id, item.name, command: item.command),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 统一提示条（面板版本过低 / 无权限 / 接口异常）
+  Widget _buildNotice(bool isCyber, String text) {
+    final Color warn = isCyber ? CyberColors.neonYellow : AppColors.warning;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: warn.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: warn.withValues(alpha: 0.35), width: 0.8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(CupertinoIcons.info_circle, size: 14, color: warn),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.4,
+                color: ref.watch(themeProvider).themeColor.titleColor(),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -730,13 +1073,29 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
   }
 
   /// 打开该任务的最新日志（复用实时日志页）
-  void _openLog(int id, String name) {
+  ///
+  /// [command] 用于「历史日志」页签定位日志目录（青龙按脚本路径建目录），
+  /// 拿不到时传空字符串即可，历史页签会退化为按任务名匹配。
+  void _openLog(int id, String name, {String command = ''}) {
     if (id <= 0) return;
     Navigator.of(context).push(
       ContainerPageRoute(
-        builder: (context) => InTimeLogPage('$id', true, name),
+        builder:
+            (context) => InTimeLogPage(
+              '$id',
+              true,
+              name,
+              command: command.isEmpty ? null : command,
+            ),
       ),
     );
+  }
+
+  /// 打开今日成功 / 失败明细列表页
+  void _openTaskResult({required bool isSuccess}) {
+    Navigator.of(
+      context,
+    ).pushNamed(Routes.routeDashboardTaskResult, arguments: isSuccess);
   }
 
   // 系统资源卡片
@@ -1101,6 +1460,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     required String title,
     required IconData icon,
     required List<Widget> children,
+    Widget? trailing,
   }) {
     return _buildCard(
       isCyber: isCyber,
@@ -1115,15 +1475,20 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                 color: ref.watch(themeProvider).primaryColor,
               ),
               const SizedBox(width: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: isCyber ? 15 : 17,
-                  fontWeight: _globalFw,
-                  color:
-                      ref.watch(themeProvider).themeColor.titleColor(),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: isCyber ? 15 : 17,
+                    fontWeight: _globalFw,
+                    color:
+                        ref.watch(themeProvider).themeColor.titleColor(),
+                  ),
                 ),
               ),
+              if (trailing != null) trailing,
             ],
           ),
           const SizedBox(height: 14),
