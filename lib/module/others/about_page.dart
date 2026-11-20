@@ -1,27 +1,20 @@
 import 'dart:io';
 
-import 'package:dio/dio.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
-import 'package:qinglong_app/base/sp_const.dart';
 import 'package:qinglong_app/base/theme.dart';
 import 'package:qinglong_app/base/ui/app_corner.dart';
 import 'package:qinglong_app/base/ui/cyber/cyber_background.dart';
 import 'package:qinglong_app/base/ui/container_page_route.dart';
 import 'package:qinglong_app/base/ui/confirm_dialog.dart';
 import 'package:qinglong_app/base/ui/lazy_load_state.dart';
-import 'package:qinglong_app/utils/share_utils.dart';
-import 'package:qinglong_app/base/ui/qlvisible.dart';
-import 'package:qinglong_app/base/ui/settings_widgets.dart';
 import 'package:qinglong_app/base/ui/other_page_card.dart';
+import 'package:qinglong_app/base/ui/settings_widgets.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/module/others/update/panel_upgrade_page.dart';
 import 'package:qinglong_app/utils/extension.dart';
-import 'package:qinglong_app/utils/sp_utils.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../main.dart';
 
@@ -30,17 +23,6 @@ class AboutPage extends ConsumerStatefulWidget {
 
   @override
   ConsumerState createState() => _AboutPageState();
-
-  /// 检查新版安装包（顶层入口，供 app 冷启动主动提醒复用）。
-  /// [autoRemind] = true 表示冷启动主动提醒：命中新版本且未提醒过才弹窗，
-  /// 弹窗后记录"已提醒"，同一版本不再重复打扰；已最新/网络异常时静默。
-  /// = false 表示关于页手动刷新：只要未更新到最新，每次都弹窗提醒。
-  static Future<void> checkGithubUpdate(
-    BuildContext context, {
-    bool autoRemind = false,
-  }) {
-    return _AboutPageState.checkGithubUpdate(context, autoRemind: autoRemind);
-  }
 }
 
 class _AboutPageState extends ConsumerState<AboutPage>
@@ -115,60 +97,41 @@ class _AboutPageState extends ConsumerState<AboutPage>
               OtherPageCard.continuous(
                 child: Column(
                   children: [
-                    Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(18),
-                          topRight: Radius.circular(18),
-                        ),
-                        onTap: () => AboutPage.checkGithubUpdate(context),
-                        child: Padding(
-                          padding: const EdgeInsets.only(
-                            left: 15,
-                            right: 15,
-                            top: 10,
-                            bottom: 10,
+                    // 版本行只做展示：已移除「点击检测新版安装包」，
+                    // 客户端不再做任何 App 自更新检查
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        left: 15,
+                        right: 15,
+                        top: 10,
+                        bottom: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Text(
+                            "版本",
+                            style: TextStyle(
+                              color:
+                                  ref
+                                      .watch(themeProvider)
+                                      .themeColor
+                                      .titleColor(),
+                              fontSize: 16,
+                            ),
                           ),
-                          child: Row(
-                            children: [
-                              Text(
-                                "版本",
-                                style: TextStyle(
-                                  color:
-                                      ref
-                                          .watch(themeProvider)
-                                          .themeColor
-                                          .titleColor(),
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const Spacer(),
-                              Text(
-                                "$desc ($versionCode)",
-                                style: TextStyle(
-                                  color:
-                                      ref
-                                          .watch(themeProvider)
-                                          .themeColor
-                                          .descColor(),
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const SizedBox(width: 5),
-                              // 小刷新图标提示：点击检测 GitHub 新版安装包
-                              Icon(
-                                CupertinoIcons.refresh,
-                                size: 14,
-                                color:
-                                    ref
-                                        .watch(themeProvider)
-                                        .themeColor
-                                        .descColor(),
-                              ),
-                            ],
+                          const Spacer(),
+                          Text(
+                            "$desc ($versionCode)",
+                            style: TextStyle(
+                              color:
+                                  ref
+                                      .watch(themeProvider)
+                                      .themeColor
+                                      .descColor(),
+                              fontSize: 16,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ),
                     const Divider(indent: 15, height: 1),
@@ -253,199 +216,6 @@ class _AboutPageState extends ConsumerState<AboutPage>
                 ),
               ),
               const SizedBox(height: 30),
-              const SectionHeader(
-                title: "反馈",
-                padding: EdgeInsets.symmetric(horizontal: 30),
-              ),
-              const SizedBox(height: 10),
-              OtherPageCard.continuous(
-                child: Column(
-                  children: [
-                    QlVisible(
-                      childReplace: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          borderRadius: const BorderRadius.only(
-                            topLeft: Radius.circular(18),
-                            topRight: Radius.circular(18),
-                          ),
-                          onTap: () async {
-                            try {
-                              await launchUrl(
-                                Uri.tryParse(
-                                  "https://github.com/zhengsh2822/qinglong_app_glass/releases",
-                                )!,
-                              );
-                            } catch (e) {
-                              logger.e(e);
-                            }
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 10,
-                              horizontal: 15,
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  CupertinoIcons.cloud_download,
-                                  color: ref.watch(themeProvider).primaryColor,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 15),
-                                Text(
-                                  "下载地址",
-                                  style: TextStyle(
-                                    color:
-                                        ref
-                                            .watch(themeProvider)
-                                            .themeColor
-                                            .titleColor(),
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                const Spacer(),
-                                const SizedBox(width: 5),
-                                Icon(
-                                  CupertinoIcons.right_chevron,
-                                  size: 16,
-                                  color:
-                                      ref
-                                          .watch(themeProvider)
-                                          .themeColor
-                                          .descColor(),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          borderRadius: const BorderRadius.only(
-                            topLeft: Radius.circular(18),
-                            topRight: Radius.circular(18),
-                          ),
-                          onTap: () async {},
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 10,
-                              horizontal: 15,
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  CupertinoIcons.heart,
-                                  color: ref.watch(themeProvider).primaryColor,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 15),
-                                Text(
-                                  "在 App Store 评分",
-                                  style: TextStyle(
-                                    color:
-                                        ref
-                                            .watch(themeProvider)
-                                            .themeColor
-                                            .titleColor(),
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Icon(
-                                  CupertinoIcons.right_chevron,
-                                  size: 16,
-                                  color:
-                                      ref
-                                          .watch(themeProvider)
-                                          .themeColor
-                                          .descColor(),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const Divider(indent: 50, height: 1),
-                    SettingsTapRow(
-                      icon: CupertinoIcons.shield,
-                      title: "用户协议",
-                      onTap: () {
-                        _launchURL("https://newtab.work/PrivacyPolicy.html");
-                      },
-                    ),
-                    const Divider(indent: 50, height: 1),
-                    SettingsTapRow(
-                      icon: CupertinoIcons.paperplane,
-                      title: "App更新通知",
-                      onTap: () {
-                        _launchURL("https://t.me/qinglongapp");
-                      },
-                    ),
-                    const Divider(indent: 50, height: 1),
-                    Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: const BorderRadius.only(
-                          bottomLeft: Radius.circular(18),
-                          bottomRight: Radius.circular(18),
-                        ),
-                        onTap: () {
-                          if (Platform.isAndroid) {
-                            ShareUtils.shareApp();
-                          } else {
-                            ShareUtils.shareApp();
-                          }
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 10,
-                            horizontal: 15,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                CupertinoIcons.share,
-                                color: ref.watch(themeProvider).primaryColor,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 15),
-                              Text(
-                                "分享App",
-                                style: TextStyle(
-                                  color:
-                                      ref
-                                          .watch(themeProvider)
-                                          .themeColor
-                                          .titleColor(),
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const Spacer(),
-                              Icon(
-                                CupertinoIcons.right_chevron,
-                                size: 16,
-                                color:
-                                    ref
-                                        .watch(themeProvider)
-                                        .themeColor
-                                        .descColor(),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 30),
               Center(
                 child: Text(
                   "APP不会收集任何关于您的信息,使用前请仔细阅读用户协议",
@@ -464,194 +234,15 @@ class _AboutPageState extends ConsumerState<AboutPage>
     return isCyber ? CyberBackground(child: scaffold) : scaffold;
   }
 
-  void _launchURL(String url) async {
-    try {
-      await launchUrl(Uri.tryParse(url.trimLeft())!);
-    } catch (e) {
-      logger.e(e);
-    }
-  }
-
   void getInfo() async {
-    String version = "3.0.7";
-    versionCode = "307";
+    String version = "3.0.8";
+    versionCode = "308";
     desc = version;
     setState(() {});
   }
 
   @override
   void onLazyLoad() {}
-
-  /// 获取新版安装包信息：GitHub Releases latest 与本地已装安装包对比。
-  /// 构建版本号固定不变（3.0.7+307），仅靠序号/时间判断是否有新安装包。
-  ///
-  /// 判定规则（序号优先，时间兜底）：
-  /// 1. 序号可比（GitHub 附件名与本地 LOCAL_BUILD_NO 均带序号）：GitHub 序号必须
-  ///    严格大于本地构建序号才算新版；相等即同一包（解决"先构建安装、
-  ///    后上传 GitHub"场景的误报，也保证"装上最新包后不再提示"）
-  /// 2. 序号不可比（任一方无序号）：退回附件上传时间对比，需晚于本地构建时间
-  ///    LOCAL_BUILD_TIME。
-  ///
-  /// 新版判定只与"本地当前安装包"（构建注入序号/时间）比较，不再使用
-  /// "点击过获取"作为已确认基准，因此点"获取安装包"跳转 GitHub 不会
-  /// 被当成已是最新；只要本地还没装上 GitHub 的新包，刷新就始终能提醒。
-  ///
-  /// [autoRemind] = true（冷启动主动提醒）：
-  /// - 命中新版本且该版本未提醒过（[spGithubLastRemindTime]/[spGithubLastRemindNo]）
-  ///   才弹窗；弹窗后记录"已提醒"，同一版本不再重复打扰
-  /// - "已是最新"/网络异常时静默，不 toast
-  static Future<void> checkGithubUpdate(
-    BuildContext context, {
-    bool autoRemind = false,
-  }) async {
-    const String releaseUrl =
-        'https://github.com/zhengsh2822/qinglong_app_glass/releases/latest';
-    // iOS 跳过安装包版本检测：云构建 IPA 未注入 LOCAL_BUILD_NO/LOCAL_BUILD_TIME，
-    // 本地无比对基准会恒判有新版；且 IPA 靠手动下载安装，App 内无法得知已装包序号。
-    // 冷启动静默跳过；关于页手动刷新改为直接打开 GitHub release 页由用户自行查看。
-    if (Platform.isIOS) {
-      if (!autoRemind) {
-        try {
-          await launchUrl(Uri.parse(releaseUrl));
-        } catch (e) {
-          logger.e(e);
-        }
-      }
-      return;
-    }
-    try {
-      final resp = await Dio().get(
-        'https://api.github.com/repos/zhengsh2822/qinglong_app_glass/releases/latest',
-        options: Options(
-          headers: {
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'qinglong-app',
-          },
-          receiveTimeout: const Duration(seconds: 10),
-          sendTimeout: const Duration(seconds: 10),
-        ),
-      );
-      if (resp.statusCode != 200 || resp.data is! Map) {
-        if (!autoRemind) "获取更新信息失败".toast();
-        return;
-      }
-      final data = resp.data as Map;
-      // 版本号固定不变，只能靠时间判断；
-      // 上传新安装包时常替换同一 release 的附件（asset），release 的 published_at 不会更新，
-      // 因此必须取 APK 附件的最新上传时间（updated_at）作为版本时间，否则永远检测不到新包。
-      // 只认 .apk 附件：release 可能同时挂 iOS IPA/截图等附件（上传常晚于 APK），
-      // 若不过滤会选中 IPA → 序号解析失败退回时间比较 → 附件时间必然晚于本地构建时间 → 永远误报新版
-      DateTime? publishedAt;
-      String? assetName;
-      final assets = data['assets'];
-      if (assets is List) {
-        for (final a in assets) {
-          if (a is Map) {
-            final name = a['name']?.toString() ?? '';
-            if (!name.toLowerCase().endsWith('.apk')) continue;
-            final t = DateTime.tryParse(a['updated_at']?.toString() ?? '');
-            if (t != null && (publishedAt == null || t.isAfter(publishedAt))) {
-              publishedAt = t;
-              assetName = name;
-            }
-          }
-        }
-      }
-      publishedAt ??= DateTime.tryParse(data['published_at']?.toString() ?? '');
-      if (publishedAt == null) {
-        if (!autoRemind) "获取更新信息失败".toast();
-        return;
-      }
-      // 闭包内引用需要 final 局部变量（可空类型无法在闭包中窄化）
-      final DateTime releaseTime = publishedAt;
-      final int latestEpoch = releaseTime.millisecondsSinceEpoch;
-      // 从附件文件名解析安装包序号（qinglong_app_glass_v3.0.0_release_N.apk → N），
-      // 无序号（旧命名）记为 0，交由时间戳判断兜底
-      int githubNo = 0;
-      if (assetName != null) {
-        final m = RegExp(r'_(\d+)\.apk$').firstMatch(assetName);
-        if (m != null) {
-          githubNo = int.tryParse(m.group(1) ?? '') ?? 0;
-        }
-      }
-      // 构建时注入的本地构建时间戳 LOCAL_BUILD_TIME（epoch，0 表示未注入不参与比较）
-      // 兼容秒/毫秒两种单位：毫秒时间戳为 13 位（≥1e11），秒为 10 位（<1e11），
-      // 若传入的是秒则自动放大 1000 倍，避免与 GitHub updated_at 毫秒对比失效
-      final localBuildRaw =
-          int.tryParse(const String.fromEnvironment('LOCAL_BUILD_TIME')) ?? 0;
-      final int localBuildAt =
-          localBuildRaw > 0 && localBuildRaw < 100000000000
-              ? localBuildRaw * 1000
-              : localBuildRaw;
-      // 构建时注入的本地安装包序号 LOCAL_BUILD_NO（0 表示未注入不参与比较）
-      final int localBuildNo =
-          int.tryParse(const String.fromEnvironment('LOCAL_BUILD_NO')) ?? 0;
-      // 与本地当前安装包对比（序号优先，时间兜底）：
-      // 序号可比（GitHub 与本地均带序号）时以序号为准——GitHub 序号必须
-      // 严格大于本地构建序号才算新版，等于即本地已装上该包。
-      final bool canCompareNo = githubNo > 0 && localBuildNo > 0;
-      final bool newByNo = canCompareNo && githubNo > localBuildNo;
-      // 时间基准：仅在序号无法比较（GitHub 或本地无序号）时兜底
-      final bool newByTime =
-          !canCompareNo && (localBuildAt == 0 || latestEpoch > localBuildAt);
-      if (!newByTime && !newByNo) {
-        // 已是最新（本地已装该包）；主动提醒模式静默，避免每次启动打扰
-        if (!autoRemind) "已是最新安装包".toast();
-        return;
-      }
-
-      // 冷启动主动提醒：同一版本只提醒一次——命中新版本即记录"已提醒"，
-      // 下次启动不再重复提醒该版本（用户选"稍后"或"获取安装包"都一样）
-      if (autoRemind) {
-        final remindAt = SpUtil.getInt(spGithubLastRemindTime, defValue: 0);
-        final remindNo = SpUtil.getInt(spGithubLastRemindNo, defValue: 0);
-        // 序号路径：GitHub 序号 <= 已提醒序号，说明该版本已提醒过
-        // 时间路径：附件时间 <= 已提醒时间，说明该版本已提醒过
-        if ((newByNo && remindNo >= githubNo) ||
-            (newByTime && remindAt >= latestEpoch)) {
-          return;
-        }
-        SpUtil.putInt(spGithubLastRemindTime, latestEpoch);
-        if (githubNo > 0) {
-          SpUtil.putInt(spGithubLastRemindNo, githubNo);
-        }
-      }
-
-      final name =
-          (data['name']?.toString().isNotEmpty ?? false)
-              ? data['name'].toString()
-              : (data['tag_name']?.toString() ?? '新版本');
-      final body = (data['body']?.toString() ?? '').trim();
-      final local = releaseTime.toLocal();
-      final timeStr =
-          '${local.year}-${local.month.toString().padLeft(2, '0')}-'
-          '${local.day.toString().padLeft(2, '0')} '
-          '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-      final content =
-          '名称：$name\n发布时间：$timeStr\n${body.length > 200 ? '${body.substring(0, 200)}...' : body}';
-
-      // 点击"获取安装包"跳转 GitHub 下载；不写任何"已确认"状态，
-      // 只要本地没装上新包，之后手动刷新/冷启动仍能继续提醒
-      void openGithub() {
-        launchUrl(Uri.parse(releaseUrl));
-      }
-
-      // 三模式通用 frosted glass 弹窗（赛博/毛玻璃/默认统一走新 UI）
-      if (!context.mounted) return;
-      showConfirmDialog(
-        context,
-        title: "发现新版安装包",
-        content: content,
-        cancelLabel: "稍后",
-        confirmLabel: "获取安装包",
-      ).then((confirmed) {
-        if (confirmed == true) openGithub();
-      });
-    } catch (e) {
-      // 主动提醒模式下网络异常静默，不 toast
-      if (!autoRemind) "网络异常，无法获取更新信息".toast();
-    }
-  }
 
   void _checkUpdate() async {
     var response = await SingleAccountPageState.ofApi(context).checkUpdate();

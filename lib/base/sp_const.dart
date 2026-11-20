@@ -37,11 +37,6 @@ const String spLogAutoJump2Bottom = "spLogAutoJump2Bottom";
 const String spClassicPageTransition = "spClassicPageTransition";
 const String spAndroidKeyboardError = "spAndroidKeyboardError";
 const String spSingleInstance = "spSingleInstance";
-// 冷启动主动提醒时"已提醒过"的 GitHub release 附件上传时间(epoch 毫秒)，
-// 用于避免同一版本重复打扰；出现更新的 release 后才再次提醒
-const String spGithubLastRemindTime = "spGithubLastRemindTime";
-// 冷启动主动提醒时"已提醒过"的 GitHub 安装包文件名序号（release_N）
-const String spGithubLastRemindNo = "spGithubLastRemindNo";
 
 /// 脚本管理列表排列方式（int）
 ///

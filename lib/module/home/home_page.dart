@@ -22,7 +22,6 @@ import 'package:qinglong_app/module/config/config_page.dart';
 import 'package:qinglong_app/module/env/env_page.dart';
 import 'package:qinglong_app/module/home/version_history_bean.dart';
 import 'package:qinglong_app/module/others/other_page.dart';
-import 'package:qinglong_app/module/others/about_page.dart';
 import 'package:qinglong_app/module/task/task_page.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/login_helper.dart';
@@ -54,13 +53,8 @@ class HomePageState extends ConsumerState<HomePage> {
     )?.registerHttp(SingleAccountPageState.ofUserInfo(context).host!);
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       getSystemBean(context);
-      // 冷启动主动提醒新版安装包：延迟 5 秒检测一次 GitHub release，
-      // 同一版本只提醒一次（autoRemind 内部记录已提醒，避免每次启动重复打扰）
-      Future.delayed(const Duration(seconds: 5), () {
-        if (mounted) {
-          AboutPage.checkGithubUpdate(context, autoRemind: true);
-        }
-      });
+      // 已移除「冷启动检测新版安装包」：客户端不再做 App 自更新提醒，
+      // 升级统一由用户自行下载安装
     });
   }
 
