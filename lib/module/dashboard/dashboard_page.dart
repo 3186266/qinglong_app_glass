@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
@@ -54,6 +55,9 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
   List<DashboardTaskResult> _failures = const [];
   // 明细接口可用性（2.22+ 有任务级明细；2.21 只有汇总数字）
   DashboardApiStatus _detailStatus = DashboardApiStatus.ok;
+
+  /// 明细是否已返回过（未返回时卡片显示加载中，避免先闪一下"暂无"）
+  bool _detailLoaded = false;
   // 2.21 降级：今日运行记录（由 /api/logs 今日日志聚合）
   List<DashboardTodayRun> _todayRuns = const [];
   bool _todayRunsLoading = false;
@@ -84,6 +88,23 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     return fromOverview > _failTotal ? fromOverview : _failTotal;
   }
 
+  /// 给单个仪表盘请求加上限，超时按失败返回，避免整页一直转圈
+  Future<HttpResponse<String>> _guard(
+    Future<HttpResponse<String>> future, {
+    Duration limit = const Duration(seconds: 12),
+  }) async {
+    try {
+      return await future.timeout(limit);
+    } catch (_) {
+      // 超时不取消底层请求（Dio 不可中断），但页面不必再等它
+      return HttpResponse<String>(
+        success: false,
+        code: -2,
+        message: '请求超时',
+      );
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -108,17 +129,21 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
 
     final api = SingleAccountPageState.ofApi(context);
 
-    // 8 个接口并行：主体 6 个负责概览/趋势/Top/标签，末尾 2 个是今日成功/失败明细。
-    // 明细与概览同批发出，仪表盘一屏就能看到「今天哪些任务成功、哪些失败」。
+    // 首屏只发 6 个主体接口（概览/运行态/趋势/Top/标签），
+    // 今日成功/失败明细放到主体渲染之后补（_loadDetail）。
+    // 原因：面板并发太多时容易被拒或超时，表现成「一直连接中」，
+    // 之前还会连锁触发「连接失败，是否重新登录？」弹窗。
+    //
+    // 每个请求单独加 12 秒上限：Dio 自身是 connect 15s + receive 30s，
+    // 再叠加重试最坏要 90 秒，页面会一直转圈。超过上限按失败处理，
+    // 先把已有数据渲染出来，用户下拉刷新即可重试。
     final results = await Future.wait([
-      api.dashboardOverview(),
-      api.dashboardRuntime(),
-      api.dashboardTrend(days: 7),
-      api.dashboardTopTime(),
-      api.dashboardTopCount(),
-      api.dashboardLabels(),
-      api.dashboardSuccesses(),
-      api.dashboardFailures(),
+      _guard(api.dashboardOverview()),
+      _guard(api.dashboardRuntime()),
+      _guard(api.dashboardTrend(days: 7)),
+      _guard(api.dashboardTopTime()),
+      _guard(api.dashboardTopCount()),
+      _guard(api.dashboardLabels()),
     ]);
 
     final overviewRes = results[0];
@@ -127,13 +152,6 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     final topTimeRes = results[3];
     final topCountRes = results[4];
     final labelsRes = results[5];
-    final successRes = results[6];
-    final failRes = results[7];
-
-    final DashboardApiStatus detailStatus = DashboardApiStatus.fromResponses([
-      successRes,
-      failRes,
-    ]);
 
     if (!mounted) return;
     setState(() {
@@ -144,9 +162,6 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       _topTime = parseDashboardList(topTimeRes.bean);
       _topCount = parseDashboardList(topCountRes.bean);
       _labels = parseDashboardList(labelsRes.bean);
-      _successes = parseDashboardTaskResults(successRes.bean, isSuccess: true);
-      _failures = parseDashboardTaskResults(failRes.bean, isSuccess: false);
-      _detailStatus = detailStatus;
       if (_overview != null ||
           _runtime != null ||
           _trend.isNotEmpty ||
@@ -176,14 +191,11 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       await _loadCronsFallback(api, overviewRes);
     }
 
-    // 2.21 及更早版本没有任务级明细接口：改用今日日志聚合，
-    // 至少把「今天哪些任务跑过、各几次」呈现出来，而不是一句版本提示。
-    if (_detailStatus.state != DashboardApiState.ok) {
-      await _loadTodayRuns(api);
-    }
+    // 今日成功/失败明细：主体渲染后再拉，不压首屏
+    unawaited(_loadDetail(api));
 
     // 含 CPU/磁盘的 system 接口独立加载，返回后原位更新资源卡片
-    await _loadSystem(api);
+    unawaited(_loadSystem(api));
   }
 
   /// overview 不可用时的兜底：/api/crons 是所有青龙版本都有的接口
@@ -225,6 +237,33 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
       });
     } catch (_) {
       // 兜底失败则保留原错误提示
+    }
+  }
+
+  /// 今日成功 / 失败明细：主体渲染完成后再拉
+  ///
+  /// 只有"接口不存在"（面板确实没有该路由，青龙 2.21 及更早）才用日志聚合降级；
+  /// 单纯请求失败/超时不去翻整棵日志树，那是白耗一轮。
+  Future<void> _loadDetail(Api api) async {
+    final results = await Future.wait([
+      _guard(api.dashboardSuccesses()),
+      _guard(api.dashboardFailures()),
+    ]);
+    if (!mounted) return;
+    final successRes = results[0];
+    final failRes = results[1];
+    final DashboardApiStatus status = DashboardApiStatus.fromResponses([
+      successRes,
+      failRes,
+    ]);
+    setState(() {
+      _successes = parseDashboardTaskResults(successRes.bean, isSuccess: true);
+      _failures = parseDashboardTaskResults(failRes.bean, isSuccess: false);
+      _detailStatus = status;
+      _detailLoaded = true;
+    });
+    if (status.state == DashboardApiState.missing) {
+      unawaited(_loadTodayRuns(api));
     }
   }
 
@@ -334,13 +373,45 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 30),
-        child: Text(
-          _errorMsg ?? '加载失败',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: ref.watch(themeProvider).themeColor.descColor(),
-            fontSize: 14,
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _errorMsg ?? '加载失败',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: ref.watch(themeProvider).themeColor.descColor(),
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+            // 网络抖动很常见（尤其面板并发高时），给一个不用退出页面的重试入口
+            const SizedBox(height: 18),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _loadData,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: ref.watch(themeProvider).primaryColor,
+                    width: 0.8,
+                  ),
+                ),
+                child: Text(
+                  '重试',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: ref.watch(themeProvider).primaryColor,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -358,7 +429,10 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
         _buildOverviewCard(isCyber),
       // 2.22+ 有任务级明细：今日成功 / 今日失败各一张卡；
       // 2.21 及更早只有汇总数字：用今日日志聚合出「今日运行记录」一张卡顶上。
-      if (_detailStatus.state == DashboardApiState.ok) ...[
+      // 明细接口"请求失败/超时"（不是 404）时不降级——面板本身有能力，
+      // 只是这次没连上，给提示 + 下拉重试即可。
+      if (_detailStatus.state == DashboardApiState.ok ||
+          _detailStatus.state == DashboardApiState.failed) ...[
         _buildTodayResultCard(isCyber, isSuccess: true),
         _buildTodayResultCard(isCyber, isSuccess: false),
       ] else if (_overview != null)
@@ -801,7 +875,27 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
 
     final List<Widget> children = [];
 
-    if (_detailStatus.state != DashboardApiState.ok) {
+    if (!_detailLoaded) {
+      // 明细还在路上（主体先渲染、明细后补）：不要先闪一句"暂无"
+      children.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              LoadingWidget(
+                color: ref.watch(themeProvider).primaryColor,
+                size: 13,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '正在加载今日明细…',
+                style: TextStyle(fontSize: 12, color: descColor),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (_detailStatus.state != DashboardApiState.ok) {
       // 面板过低 / 无权限 / 网络错误：分别给出可执行的提示
       children.add(_buildNotice(isCyber, _detailStatus.message ?? '明细加载失败'));
     } else if (items.isEmpty) {

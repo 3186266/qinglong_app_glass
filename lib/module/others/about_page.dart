@@ -473,8 +473,8 @@ class _AboutPageState extends ConsumerState<AboutPage>
   }
 
   void getInfo() async {
-    String version = "3.0.5";
-    versionCode = "305";
+    String version = "3.0.6";
+    versionCode = "306";
     desc = version;
     setState(() {});
   }
@@ -483,7 +483,7 @@ class _AboutPageState extends ConsumerState<AboutPage>
   void onLazyLoad() {}
 
   /// 获取新版安装包信息：GitHub Releases latest 与本地已装安装包对比。
-  /// 构建版本号固定不变（3.0.5+305），仅靠序号/时间判断是否有新安装包。
+  /// 构建版本号固定不变（3.0.6+306），仅靠序号/时间判断是否有新安装包。
   ///
   /// 判定规则（序号优先，时间兜底）：
   /// 1. 序号可比（GitHub 附件名与本地 LOCAL_BUILD_NO 均带序号）：GitHub 序号必须

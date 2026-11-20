@@ -22,6 +22,13 @@ class Http {
   Dio? _dio;
   bool pushedLoginPage = false;
 
+  /// 网络层异常（超时 / 连接失败 / 死连接）专用业务码。
+  ///
+  /// 与 token 失效区分开：断网、面板卡顿、接口慢都只是"这次没连上"，
+  /// 不该弹「连接失败，是否重新登录？」。这类错误只重试一次，
+  /// 仍失败就把结果交还调用方（页面自己显示重试入口）。
+  static const int networkErrorCode = -1001;
+
   /// 标记该账号有待处理的登录失败弹窗（后台账号断网时延迟弹窗）
   /// IndexedStack 会同时构建所有账号，非激活账号断网不应立即弹窗
   /// 切换到该账号时由 MultiAccountPageState.updateIndex 触发
@@ -100,7 +107,7 @@ class Http {
       // 重建 Dio + 静默刷新 token，然后无论如何都重试一次
       // 即使 silentReLogin 失败（如未记住密码），Dio 已重建，重试可能直接成功
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return get<T>(
           uri,
           json,
@@ -112,9 +119,7 @@ class Http {
       }
 
       // 重试仍失败且 needRelogin=true：说明 token 确实失效，跳转登录页
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
 
       if (useCache && result.success) {
         // 优先使用调用方显式传入的 ttl,否则按 URI 推断分级 TTL
@@ -129,7 +134,7 @@ class Http {
       final result = exceptionHandler<T>(e, uri);
       // 401 也走静默刷新重试
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return get<T>(
           uri,
           json,
@@ -139,9 +144,7 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
       return result;
     } catch (e) {
       logger.e(e);
@@ -170,6 +173,52 @@ class Http {
   /// 并发安全：多个请求同时失败时，只重建一次 Dio + 刷新一次 token
   /// 其他请求等待结果，避免重复重建 Dio 导致竞态
   Completer<void>? _reloginCompleter;
+
+  /// 网络抖动专用：短时间内只重建一次，且不强制断开正在进行的请求。
+  ///
+  /// 仪表盘一次并发 8 个接口，若某个超时就 `close(force: true)` 重建 Dio，
+  /// 会把其余仍在传输的连接一并掐断，导致"全部失败 → 弹登录窗"的连锁反应。
+  /// 这里改用 force: false 并加 3 秒节流：并发请求一起超时时只重建一次。
+  DateTime? _lastSoftRebuildAt;
+
+  Future<void> _rebuildDioSoftly() async {
+    final DateTime now = DateTime.now();
+    final DateTime? last = _lastSoftRebuildAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 3)) {
+      // 刚重建过：说明是多个请求一起超时，稍等后直接重试即可
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      return;
+    }
+    _lastSoftRebuildAt = now;
+    try {
+      // force: false —— 等在飞的请求自然结束，不打断其它并发调用
+      _dio?.close(force: false);
+    } catch (_) {}
+    initDioConfig(host);
+  }
+
+  /// 重试前的准备，按失败原因分流
+  ///
+  /// - 网络类异常（超时 / 连接失败）：只重建一次 Dio，**不做密码重新登录**
+  ///   —— 断网时 silentReLogin 同样会超时，白等一轮还让用户以为账号出问题
+  /// - 其它（HTML 登录页 / 响应异常 / 401）：重建 Dio + 静默刷新 token
+  Future<void> _prepareRetry(HttpResponse result) async {
+    if (result.code == networkErrorCode) {
+      await _rebuildDioSoftly();
+      return;
+    }
+    await _handleTokenExpired();
+  }
+
+  /// 重试仍失败时的收尾：只有"真的登录态失效"才弹登录窗
+  ///
+  /// 网络类异常永远不弹 —— 这正是「点进仪表盘就弹连接失败，其实请求还在跑」
+  /// 的根因：8 个并发接口里只要有一个超时，就会被误判成需要重新登录。
+  void _maybeExitLogin(HttpResponse result) {
+    if (!result.needRelogin) return;
+    if (result.code == networkErrorCode) return;
+    exitLogin();
+  }
 
   /// 处理 token 失效 / 解析异常：重建 Dio + 静默刷新 token
   /// 并发安全：多个请求同时触发时，只执行一次，其他请求等待结果
@@ -214,7 +263,7 @@ class Http {
 
       // token 失效 / 解析异常 / Dio 死连接：重建 Dio + 静默刷新 + 重试一次
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return post<T>(
           uri,
           json,
@@ -223,15 +272,13 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
 
       return result;
     } on DioException catch (e) {
       final result = exceptionHandler<T>(e, uri);
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return post<T>(
           uri,
           json,
@@ -240,9 +287,7 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
       return result;
     }
   }
@@ -269,7 +314,7 @@ class Http {
 
       // token 失效 / 解析异常 / Dio 死连接：重建 Dio + 静默刷新 + 重试一次
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return delete<T>(
           uri,
           json,
@@ -278,15 +323,13 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
 
       return result;
     } on DioException catch (e) {
       final result = exceptionHandler<T>(e, uri);
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return delete<T>(
           uri,
           json,
@@ -295,9 +338,7 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
       return result;
     }
   }
@@ -324,7 +365,7 @@ class Http {
 
       // token 失效 / 解析异常 / Dio 死连接：重建 Dio + 静默刷新 + 重试一次
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return put<T>(
           uri,
           json,
@@ -333,15 +374,13 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
 
       return result;
     } on DioException catch (e) {
       final result = exceptionHandler<T>(e, uri);
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return put<T>(
           uri,
           json,
@@ -350,9 +389,7 @@ class Http {
           reloginRetry: true,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
       return result;
     }
   }
@@ -637,7 +674,7 @@ class Http {
       var result = decodeResponse<T>(response, "data", false);
 
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return uploadFile<T>(
           uri,
           filePath,
@@ -647,15 +684,13 @@ class Http {
           sendTimeout: sendTimeout,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
 
       return result;
     } on DioException catch (e) {
       final result = exceptionHandler<T>(e, uri);
       if (result.needRelogin && !reloginRetry) {
-        await _handleTokenExpired();
+        await _prepareRetry(result);
         return uploadFile<T>(
           uri,
           filePath,
@@ -665,9 +700,7 @@ class Http {
           sendTimeout: sendTimeout,
         );
       }
-      if (result.needRelogin && reloginRetry) {
-        exitLogin();
-      }
+      _maybeExitLogin(result);
       return result;
     }
   }
@@ -936,7 +969,7 @@ class Http {
         return HttpResponse<T>(
           success: false,
           message: "网络连接异常，正在重试...",
-          code: -1000,
+          code: networkErrorCode,
           needRelogin: true,
         );
       }
