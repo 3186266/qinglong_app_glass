@@ -90,36 +90,41 @@ class CronTaskActions {
       .replaceAll(" ", "")
       .toLowerCase();
 
+  /// 青龙 status 语义：0 运行中 / 1 空闲 / 2 已禁用 / 3 队列中
+  static bool isRunning(TaskBean? task) {
+    if (task == null) return false;
+    final int status = task.status ?? 1;
+    return status == 0 || status == 3;
+  }
+
   /// 立即运行一次
   Future<String?> run(TaskBean task) async {
     final String id = task.sId ?? "";
     if (id.isEmpty) return "任务 ID 无效";
     EasyLoading.show(status: "运行中...");
-    HttpResponse<NullResponse> response = await _api.startTasks([id]);
-    EasyLoading.dismiss();
-    return response.success ? null : (response.message ?? "运行失败");
+    try {
+      HttpResponse<NullResponse> response = await _api.startTasks([id]);
+      return response.success ? null : (response.message ?? "运行失败");
+    } catch (e) {
+      return "运行失败：$e";
+    } finally {
+      // 无论成功失败都要关掉 loading，否则按钮会永久卡在禁用态
+      EasyLoading.dismiss();
+    }
   }
 
-  /// 暂停：先停掉运行中的实例，再禁用定时任务
-  Future<String?> pause(TaskBean task) async {
+  /// 暂停 = 停止正在运行的脚本实例（不改动定时任务的启用状态）
+  Future<String?> stop(TaskBean task) async {
     final String id = task.sId ?? "";
     if (id.isEmpty) return "任务 ID 无效";
     EasyLoading.show(status: "暂停中...");
-    if ((task.status ?? 1) == 0) {
-      await _api.stopTasks([id]);
+    try {
+      HttpResponse<NullResponse> response = await _api.stopTasks([id]);
+      return response.success ? null : (response.message ?? "暂停失败");
+    } catch (e) {
+      return "暂停失败：$e";
+    } finally {
+      EasyLoading.dismiss();
     }
-    HttpResponse<NullResponse> response = await _api.disableTask([id]);
-    EasyLoading.dismiss();
-    return response.success ? null : (response.message ?? "暂停失败");
-  }
-
-  /// 恢复被暂停（禁用）的任务
-  Future<String?> resume(TaskBean task) async {
-    final String id = task.sId ?? "";
-    if (id.isEmpty) return "任务 ID 无效";
-    EasyLoading.show(status: "恢复中...");
-    HttpResponse<NullResponse> response = await _api.enableTask([id]);
-    EasyLoading.dismiss();
-    return response.success ? null : (response.message ?? "恢复失败");
   }
 }

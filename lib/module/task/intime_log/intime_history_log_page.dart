@@ -17,9 +17,11 @@ import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/share_utils.dart';
 
 import '../../../base/cupertino_sheet.dart';
+import '../../../base/ui/container_page_route.dart';
 import '../../../base/ui/log_text_view.dart';
 import '../../../main.dart';
 import '../../home/system_bean.dart';
+import 'intime_log_page.dart';
 
 class InTimeHistoryLogPage extends ConsumerStatefulWidget {
   final String title;
@@ -52,8 +54,11 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
   /// 与当前日志对应的定时任务；为 null 时不展示底部操作栏
   TaskBean? _task;
 
-  /// 操作进行中（run / pause / resume），同时用于防重复点击与按钮 loading
+  /// 操作进行中（run / stop），同时用于防重复点击与按钮 loading
   String? _acting;
+
+  /// 刚点完运行/暂停时的本地期望状态，避免面板状态刷新有延迟导致按钮来回跳
+  bool? _optimisticRunning;
 
   getLogData() async {
     HttpResponse<String> response = await SingleAccountPageState.ofApi(
@@ -132,12 +137,11 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
   }
 
   // ------------------------------------------------------------------
-  // 底部操作栏：运行 / 暂停（已暂停时为「恢复」）
+  // 底部操作栏：运行 / 暂停（暂停 = 停止正在运行的实例，仅在运行时可用）
   // ------------------------------------------------------------------
   Widget _buildActionBar(BuildContext context) {
     final TaskBean task = _task!;
-    final bool paused = task.isDisabled == 1;
-    final bool running = (task.status ?? 1) == 0;
+    final bool running = _optimisticRunning ?? CronTaskActions.isRunning(task);
     final Color accent = ref.watch(themeProvider).primaryColor;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -169,23 +173,20 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
                   onTap: _acting != null ? null : runTask,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ActionButton(
-                  icon:
-                      paused
-                          ? CupertinoIcons.play_circle
-                          : CupertinoIcons.pause_fill,
-                  label: paused ? "恢复" : "暂停",
-                  color: paused ? const Color(0xff2ECC71) : AppColors.warning,
-                  filled: false,
-                  loading: _acting == "pause" || _acting == "resume",
-                  onTap:
-                      _acting != null
-                          ? null
-                          : (paused ? resumeTask : pauseTask),
+              // 没在运行时压根不给「暂停」，避免误以为脚本正在跑
+              if (running) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ActionButton(
+                    icon: CupertinoIcons.pause_fill,
+                    label: "暂停",
+                    color: AppColors.warning,
+                    filled: false,
+                    loading: _acting == "stop",
+                    onTap: _acting != null ? null : stopTask,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -204,6 +205,8 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
       context,
     ).locate(cronId: widget.cronId, logDir: widget.path);
     if (!mounted) return;
+    // 网络抖动导致这次没定位到：保留上一次结果，别让底部按钮凭空消失
+    if (task == null && _task != null) return;
     setState(() => _task = task);
   }
 
@@ -211,45 +214,81 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
     final TaskBean? task = _task;
     if (task == null || _acting != null) return;
     setState(() => _acting = "run");
-    final String? error = await CronTaskActions(context).run(task);
+    String? error;
+    try {
+      error = await CronTaskActions(context).run(task);
+    } catch (e) {
+      error = "运行失败：$e";
+    }
     if (!mounted) return;
-    setState(() => _acting = null);
+    setState(() {
+      _acting = null;
+      if (error == null) _optimisticRunning = true;
+    });
     if (error == null) {
       "已开始运行".toast();
-      await loadTask();
+      _syncTaskLater();
+      // 历史日志是静态文件，看不到新输出；直接带用户去实时日志，点完就能确认跑起来了
+      _openInTimeLog(task);
     } else {
       error.toast();
     }
   }
 
-  Future<void> pauseTask() async {
+  /// 跳到该任务的实时日志（首屏即可看到新跑出来的输出）
+  void _openInTimeLog(TaskBean task) {
+    final String cronId = task.sId ?? "";
+    if (cronId.isEmpty) return;
+    Navigator.of(context).push(
+      ContainerPageRoute(
+        builder:
+            (context) =>
+                InTimeLogPage(cronId, true, task.name ?? widget.title,
+                  command: task.command),
+      ),
+    );
+  }
+
+  Future<void> stopTask() async {
     final TaskBean? task = _task;
     if (task == null || _acting != null) return;
-    setState(() => _acting = "pause");
-    final String? error = await CronTaskActions(context).pause(task);
+    setState(() => _acting = "stop");
+    String? error;
+    try {
+      error = await CronTaskActions(context).stop(task);
+    } catch (e) {
+      error = "暂停失败：$e";
+    }
     if (!mounted) return;
-    setState(() => _acting = null);
+    setState(() {
+      _acting = null;
+      if (error == null) _optimisticRunning = false;
+    });
     if (error == null) {
       "已暂停".toast();
-      await loadTask();
+      _syncTaskLater();
     } else {
       error.toast();
     }
   }
 
-  Future<void> resumeTask() async {
-    final TaskBean? task = _task;
-    if (task == null || _acting != null) return;
-    setState(() => _acting = "resume");
-    final String? error = await CronTaskActions(context).resume(task);
-    if (!mounted) return;
-    setState(() => _acting = null);
-    if (error == null) {
-      "已恢复".toast();
+  /// 面板对「运行/停止」的状态同步有延迟：轮询几次，等真实状态追上
+  /// 本地期望值后再撤掉乐观标记，避免按钮立刻跳回原状态
+  Future<void> _syncTaskLater() async {
+    for (int i = 0; i < 3; i++) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (!mounted) return;
       await loadTask();
-    } else {
-      error.toast();
+      if (!mounted) return;
+      final TaskBean? task = _task;
+      if (task != null &&
+          CronTaskActions.isRunning(task) == _optimisticRunning) {
+        setState(() => _optimisticRunning = null);
+        return;
+      }
     }
+    if (!mounted) return;
+    setState(() => _optimisticRunning = null);
   }
 
   void deleteFold(String title, String path) async {

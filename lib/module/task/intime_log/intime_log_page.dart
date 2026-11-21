@@ -71,8 +71,14 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
   /// 当前日志所属的定时任务（用于顶栏「运行 / 暂停」）
   TaskBean? _task;
 
-  /// 操作进行中（run / pause / resume），防重复点击
+  /// 连续空日志的容错次数（默认 3 次，点「运行」后临时放大）
+  int _emptyTolerance = 3;
+
+  /// 操作进行中（run / stop），防重复点击
   String? _acting;
+
+  /// 刚点完运行/暂停时的本地期望状态，面板状态刷新有延迟时先顶住按钮外观
+  bool? _optimisticRunning;
 
   ScrollController? controller = ScrollController();
   bool showVIPReminder = false;
@@ -93,7 +99,7 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
       String? newContent = response.bean;
       if (newContent == null || newContent.isEmpty) {
         _emptyCount++;
-        if (_emptyCount >= 3) {
+        if (_emptyCount >= _emptyTolerance) {
           stopPauseableTimer();
           canRequest = false;
           content = "";
@@ -106,6 +112,8 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
       final bool changed = newContent != content;
       if (changed) {
         _emptyCount = 0;
+        // 已有输出：容错次数恢复默认，脚本结束后仍能按原逻辑停下轮询
+        _emptyTolerance = 3;
       }
       final String prev = content ?? "";
       content = newContent;
@@ -197,6 +205,8 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
   @override
   Widget build(BuildContext context) {
     final _ = ref.watch(themeProvider);
+    final bool running =
+        _optimisticRunning ?? CronTaskActions.isRunning(_task);
     return Builder(
       builder: (context) {
         return Scaffold(
@@ -228,23 +238,13 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
                           loading: _acting == "run",
                           onTap: _acting != null ? null : _runTask,
                         ),
-                        _LogActionIcon(
-                          icon:
-                              _task!.isDisabled == 1
-                                  ? CupertinoIcons.play_circle
-                                  : CupertinoIcons.pause_fill,
-                          color:
-                              _task!.isDisabled == 1
-                                  ? const Color(0xff2ECC71)
-                                  : AppColors.warning,
-                          loading: _acting == "pause" || _acting == "resume",
-                          onTap:
-                              _acting != null
-                                  ? null
-                                  : (_task!.isDisabled == 1
-                                      ? _resumeTask
-                                      : _pauseTask),
-                        ),
+                        if (running)
+                          _LogActionIcon(
+                            icon: CupertinoIcons.pause_fill,
+                            color: AppColors.warning,
+                            loading: _acting == "stop",
+                            onTap: _acting != null ? null : _stopTask,
+                          ),
                       ],
                       CommitButton(
                         title: "分享",
@@ -381,6 +381,8 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
       context,
     ).locate(cronId: widget.cronId);
     if (!mounted) return;
+    // 网络抖动导致这次没定位到：保留上次结果，避免顶栏按钮消失
+    if (task == null && _task != null) return;
     setState(() => _task = task);
   }
 
@@ -388,6 +390,8 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
   /// 这里重置空计数并重新开轮询，否则点了运行看不到新日志
   void _resumePolling() {
     _emptyCount = 0;
+    // 刚启动的脚本要跑几秒才出日志：临时放宽容错次数，避免 6 秒内没输出就停了轮询
+    _emptyTolerance = 30;
     canRequest = true;
     hasToastedFailed = false;
     if (widget.needTimer) {
@@ -401,46 +405,65 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
     final TaskBean? task = _task;
     if (task == null || _acting != null) return;
     setState(() => _acting = "run");
-    final String? error = await CronTaskActions(context).run(task);
+    String? error;
+    try {
+      error = await CronTaskActions(context).run(task);
+    } catch (e) {
+      error = "运行失败：$e";
+    }
     if (!mounted) return;
-    setState(() => _acting = null);
+    setState(() {
+      _acting = null;
+      if (error == null) _optimisticRunning = true;
+    });
     if (error == null) {
       "已开始运行".toast();
       _resumePolling();
-      await _loadTask();
+      _syncTaskLater();
     } else {
       error.toast();
     }
   }
 
-  Future<void> _pauseTask() async {
+  Future<void> _stopTask() async {
     final TaskBean? task = _task;
     if (task == null || _acting != null) return;
-    setState(() => _acting = "pause");
-    final String? error = await CronTaskActions(context).pause(task);
+    setState(() => _acting = "stop");
+    String? error;
+    try {
+      error = await CronTaskActions(context).stop(task);
+    } catch (e) {
+      error = "暂停失败：$e";
+    }
     if (!mounted) return;
-    setState(() => _acting = null);
+    setState(() {
+      _acting = null;
+      if (error == null) _optimisticRunning = false;
+    });
     if (error == null) {
       "已暂停".toast();
-      await _loadTask();
+      _syncTaskLater();
     } else {
       error.toast();
     }
   }
 
-  Future<void> _resumeTask() async {
-    final TaskBean? task = _task;
-    if (task == null || _acting != null) return;
-    setState(() => _acting = "resume");
-    final String? error = await CronTaskActions(context).resume(task);
-    if (!mounted) return;
-    setState(() => _acting = null);
-    if (error == null) {
-      "已恢复".toast();
+  /// 等面板真实状态追上本地期望值后再撤掉乐观标记，避免按钮来回跳
+  Future<void> _syncTaskLater() async {
+    for (int i = 0; i < 3; i++) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (!mounted) return;
       await _loadTask();
-    } else {
-      error.toast();
+      if (!mounted) return;
+      final TaskBean? task = _task;
+      if (task != null &&
+          CronTaskActions.isRunning(task) == _optimisticRunning) {
+        setState(() => _optimisticRunning = null);
+        return;
+      }
     }
+    if (!mounted) return;
+    setState(() => _optimisticRunning = null);
   }
 }
 
