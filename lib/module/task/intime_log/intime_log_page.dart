@@ -234,14 +234,14 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
                       if (_task != null) ...[
                         _LogActionIcon(
                           icon: CupertinoIcons.play_fill,
-                          color: ref.read(themeProvider).primaryColor,
+                          color: AppColors.actionRed,
                           loading: _acting == "run",
                           onTap: _acting != null ? null : _runTask,
                         ),
                         if (running)
                           _LogActionIcon(
                             icon: CupertinoIcons.pause_fill,
-                            color: AppColors.warning,
+                            color: AppColors.actionRed,
                             loading: _acting == "stop",
                             onTap: _acting != null ? null : _stopTask,
                           ),

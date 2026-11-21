@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 
 class AppColors {
   static const Color danger = Color(0xffEA4D3E);
+
+  /// 任务操作按钮固定色（运行 / 暂停）：深红，不跟随主题主色，
+  /// 避免白天模式下与蓝色主色混在一起看不清
+  static const Color actionRed = Color(0xffC62828);
   static const Color warning = Color(0xffF19A39);
   static const Color success = Color(0xff5D5E70);
   static const Color purple = Color(0xffA356D6);

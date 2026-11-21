@@ -9,7 +9,6 @@ import 'package:qinglong_app/base/cron_task_actions.dart';
 import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
-import 'package:qinglong_app/base/theme.dart';
 import 'package:qinglong_app/base/ui/lazy_load_state.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
@@ -142,7 +141,6 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
   Widget _buildActionBar(BuildContext context) {
     final TaskBean task = _task!;
     final bool running = _optimisticRunning ?? CronTaskActions.isRunning(task);
-    final Color accent = ref.watch(themeProvider).primaryColor;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
@@ -167,7 +165,7 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
                 child: _ActionButton(
                   icon: CupertinoIcons.play_fill,
                   label: running ? "重新运行" : "运行",
-                  color: accent,
+                  color: AppColors.actionRed,
                   filled: true,
                   loading: _acting == "run",
                   onTap: _acting != null ? null : runTask,
@@ -180,7 +178,7 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
                   child: _ActionButton(
                     icon: CupertinoIcons.pause_fill,
                     label: "暂停",
-                    color: AppColors.warning,
+                    color: AppColors.actionRed,
                     filled: false,
                     loading: _acting == "stop",
                     onTap: _acting != null ? null : stopTask,
