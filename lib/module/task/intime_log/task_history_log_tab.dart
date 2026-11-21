@@ -173,6 +173,9 @@ class _TaskHistoryLogTabState extends ConsumerState<TaskHistoryLogTab> {
                               (context) => InTimeHistoryLogPage(
                                 path: item.dir,
                                 title: item.file,
+                                // 已知任务 id：日志页可直接运行/暂停该任务
+                                cronId: widget.cronId,
+                                cronName: widget.taskName,
                               ),
                         ),
                       )
