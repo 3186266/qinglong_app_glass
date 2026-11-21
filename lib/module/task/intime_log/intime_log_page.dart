@@ -4,6 +4,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qinglong_app/base/app_colors.dart';
+import 'package:qinglong_app/base/cron_task_actions.dart';
 import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
@@ -13,6 +14,7 @@ import 'package:qinglong_app/base/ui/lazy_load_state.dart';
 import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/base/ui/log_scroll_button.dart';
 import 'package:qinglong_app/module/scan_page.dart';
+import 'package:qinglong_app/module/task/task_bean.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/sp_utils.dart';
 
@@ -65,6 +67,12 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
   bool canRequest = true;
   int _emptyCount = 0;
   bool alwaysAuthScroll = false;
+
+  /// 当前日志所属的定时任务（用于顶栏「运行 / 暂停」）
+  TaskBean? _task;
+
+  /// 操作进行中（run / pause / resume），防重复点击
+  String? _acting;
 
   ScrollController? controller = ScrollController();
   bool showVIPReminder = false;
@@ -213,6 +221,31 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
             actions:
                 _tabIndex == 0
                     ? [
+                      if (_task != null) ...[
+                        _LogActionIcon(
+                          icon: CupertinoIcons.play_fill,
+                          color: ref.read(themeProvider).primaryColor,
+                          loading: _acting == "run",
+                          onTap: _acting != null ? null : _runTask,
+                        ),
+                        _LogActionIcon(
+                          icon:
+                              _task!.isDisabled == 1
+                                  ? CupertinoIcons.play_circle
+                                  : CupertinoIcons.pause_fill,
+                          color:
+                              _task!.isDisabled == 1
+                                  ? const Color(0xff2ECC71)
+                                  : AppColors.warning,
+                          loading: _acting == "pause" || _acting == "resume",
+                          onTap:
+                              _acting != null
+                                  ? null
+                                  : (_task!.isDisabled == 1
+                                      ? _resumeTask
+                                      : _pauseTask),
+                        ),
+                      ],
                       CommitButton(
                         title: "分享",
                         onTap: () {
@@ -337,5 +370,121 @@ class _InTimeLogPageState extends ConsumerState<InTimeLogPage>
         getLogData();
       });
     }
+    _loadTask();
+  }
+
+  // ------------------------------------------------------------------
+  // 顶栏「运行 / 暂停 / 恢复」
+  // ------------------------------------------------------------------
+  Future<void> _loadTask() async {
+    final TaskBean? task = await CronTaskActions(
+      context,
+    ).locate(cronId: widget.cronId);
+    if (!mounted) return;
+    setState(() => _task = task);
+  }
+
+  /// 任务刚被拉起时日志是空的、轮询已按「连续空数据」停掉，
+  /// 这里重置空计数并重新开轮询，否则点了运行看不到新日志
+  void _resumePolling() {
+    _emptyCount = 0;
+    canRequest = true;
+    hasToastedFailed = false;
+    if (widget.needTimer) {
+      startPauseableTimer(const Duration(seconds: 2), () => getLogData());
+    } else {
+      getLogData();
+    }
+  }
+
+  Future<void> _runTask() async {
+    final TaskBean? task = _task;
+    if (task == null || _acting != null) return;
+    setState(() => _acting = "run");
+    final String? error = await CronTaskActions(context).run(task);
+    if (!mounted) return;
+    setState(() => _acting = null);
+    if (error == null) {
+      "已开始运行".toast();
+      _resumePolling();
+      await _loadTask();
+    } else {
+      error.toast();
+    }
+  }
+
+  Future<void> _pauseTask() async {
+    final TaskBean? task = _task;
+    if (task == null || _acting != null) return;
+    setState(() => _acting = "pause");
+    final String? error = await CronTaskActions(context).pause(task);
+    if (!mounted) return;
+    setState(() => _acting = null);
+    if (error == null) {
+      "已暂停".toast();
+      await _loadTask();
+    } else {
+      error.toast();
+    }
+  }
+
+  Future<void> _resumeTask() async {
+    final TaskBean? task = _task;
+    if (task == null || _acting != null) return;
+    setState(() => _acting = "resume");
+    final String? error = await CronTaskActions(context).resume(task);
+    if (!mounted) return;
+    setState(() => _acting = null);
+    if (error == null) {
+      "已恢复".toast();
+      await _loadTask();
+    } else {
+      error.toast();
+    }
   }
 }
+
+/// 顶栏的圆形动作按钮（运行 / 暂停 / 恢复），点击区 40x40
+class _LogActionIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final bool loading;
+  final VoidCallback? onTap;
+
+  const _LogActionIcon({
+    required this.icon,
+    required this.color,
+    required this.onTap,
+    this.loading = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: Center(
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 150),
+            opacity: onTap == null ? 0.5 : 1,
+            child:
+                loading
+                    ? SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(color),
+                      ),
+                    )
+                    : Icon(icon, size: 22, color: color),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
