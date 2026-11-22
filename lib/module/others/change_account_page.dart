@@ -423,9 +423,27 @@ class _ChangeAccountPageState extends ConsumerState<ChangeAccountPage> {
     // 统一卡片共享展开组件（与五列表页同款，margin 在组件外层防矩形陷阱）：
     // 点击 → 内容隐藏 → 容器从卡片矩形展开登录页（以目标空槽位身份登录），
     // 返回收回无缝还原。AccountIndexScope 让登录链路写入空槽位。
+    final CardTransitionController addCtl = CardTransitionController();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: CardTransitionSource(
+        controller: addCtl,
+        sourceBuilder: (ctx) => _buildAddAccountContent(accentColor),
+        // 覆盖默认点击行为：先标记"本次切槽位不写入上次使用账号"，
+        // 再走同一条卡片展开转场（添加账号是临时动作，
+        // 若写入记忆，下次启动会跳到刚添加的新账号）
+        onTap: () {
+          MultiAccountPageState.keepLastAccountOnNextSwitch = true;
+          addCtl.open();
+        },
+        pageBuilder:
+            (context) => AccountIndexScope(
+              index: index,
+              child: LoginPage(
+                fromAddNewAccount: true,
+                targetAccountIndex: index,
+              ),
+            ),
         child: CapsuleGlowCard.continuous(
           isCyber: isCyber,
           isPinned: false,
@@ -435,15 +453,6 @@ class _ChangeAccountPageState extends ConsumerState<ChangeAccountPage> {
             child: _buildAddAccountContent(accentColor),
           ),
         ),
-        sourceBuilder: (ctx) => _buildAddAccountContent(accentColor),
-        pageBuilder:
-            (context) => AccountIndexScope(
-              index: index,
-              child: LoginPage(
-                fromAddNewAccount: true,
-                targetAccountIndex: index,
-              ),
-            ),
       ),
     );
   }

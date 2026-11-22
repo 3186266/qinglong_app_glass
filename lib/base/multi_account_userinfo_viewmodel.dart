@@ -166,4 +166,62 @@ class MultiAccountUserInfoViewModel {
     tokenBeans.clear();
     tokenBeans.addAll(bean);
   }
+
+  // ------------------------------------------------------------------
+  // 记忆上次使用的账号容器
+  //
+  // 存 host + alias 组成的业务键，而不是槽位下标：账号排序、删除后
+  // 下标会整体位移，只有按身份重新定位才能准确还原"关闭前是哪个账号"。
+  // 多个账号登录同一面板（host 相同）时用 alias 区分；alias 为空则视为
+  // 同一个账号（青龙同 host 不同账号 = 不同面板用户，属于极少见组合）。
+  // ------------------------------------------------------------------
+
+  /// 生成账号业务键
+  static String accountKeyOf(String? host, String? alias) {
+    final String h = (host ?? "").trim();
+    if (h.isEmpty) return "";
+    return "$h|${(alias ?? "").trim()}";
+  }
+
+  /// 记录当前正在使用的账号
+  void saveLastActiveAccount(String? host, String? alias) {
+    final String key = accountKeyOf(host, alias);
+    if (key.isEmpty) return;
+    SpUtil.putString(spLastActiveAccount, key);
+  }
+
+  String get lastActiveAccountKey =>
+      SpUtil.getString(spLastActiveAccount, defValue: "");
+
+  /// 把上次使用的账号键转成当前槽位下标；
+  /// 找不到（账号被删）返回 null，调用方自行兜底。
+  ///
+  /// 两级匹配：先精确匹配 host+alias，再退化为仅匹配 host
+  /// （用户重启前改过别名时仍能还原到同一面板）。
+  int? lastActiveSlotIndex() {
+    final String key = lastActiveAccountKey;
+    if (key.isEmpty) return null;
+    final int sep = key.indexOf("|");
+    final String host = sep >= 0 ? key.substring(0, sep) : key;
+    final String alias = sep >= 0 ? key.substring(sep + 1) : "";
+    if (host.isEmpty) return null;
+
+    int? hostOnly;
+    for (int i = 0; i < tokenBeans.length; i++) {
+      final TokenBean bean = tokenBeans[i];
+      if ((bean.host ?? "").isEmpty) continue;
+      if (bean.host != host) continue;
+      if ((bean.alias ?? "").trim() == alias) return i;
+      hostOnly ??= i;
+    }
+    return hostOnly;
+  }
+
+  /// 当前槽位下标对应的业务键（用于写回）
+  String? accountKeyAt(int index) {
+    if (index < 0 || index >= tokenBeans.length) return null;
+    final TokenBean bean = tokenBeans[index];
+    if ((bean.host ?? "").isEmpty) return null;
+    return accountKeyOf(bean.host, bean.alias);
+  }
 }

@@ -10,6 +10,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:logger/logger.dart';
 import 'package:qinglong_app/base/ui/keyboard_dismiss_observer.dart';
 import 'package:qinglong_app/base/multi_account_userinfo_viewmodel.dart';
+import 'package:qinglong_app/base/userinfo_viewmodel.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
 import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/sp_const.dart';
@@ -358,6 +359,12 @@ class MultiAccountPageState extends ConsumerState<MultiAccountPage>
   /// IndexedStack 会同时构建所有账号页面，非激活账号的网络失败弹窗需延迟到切换时
   static int currentAccountIndex = 0;
 
+  /// 下一次 updateIndex 不要写「上次使用账号」。
+  /// 场景：新添加一个空槽位账号，登录成功后会自动切过去——这是临时动作，
+  /// 若写进记忆，下次启动就会跳到那个新账号，与用户预期相反。
+  /// 由「添加账号」入口（首页账号菜单 / 我的页添加卡片）置 true。
+  static bool keepLastAccountOnNextSwitch = false;
+
   List<Widget> list = [];
 
   get index => _index;
@@ -369,6 +376,22 @@ class MultiAccountPageState extends ConsumerState<MultiAccountPage>
     _index = index;
     currentAccountIndex = index;
     setState(() {});
+
+    // 记忆当前账号：下次启动直接回到这个容器（存 host+alias，不存下标，
+    // 这样账号排序/删除后仍能还原到正确的面板）
+    if (!keepLastAccountOnNextSwitch) {
+      final String name = index.toString();
+      if (getIt.isRegistered<UserInfoViewModel>(instanceName: name)) {
+        final UserInfoViewModel user = getIt<UserInfoViewModel>(
+          instanceName: name,
+        );
+        getIt<MultiAccountUserInfoViewModel>().saveLastActiveAccount(
+          user.host,
+          user.alias,
+        );
+      }
+    }
+    keepLastAccountOnNextSwitch = false;
 
     // 切换到新账号后，检查该账号是否有待处理的登录失败弹窗
     // 场景：IndexedStack 后台账号断网时 exitLogin 延迟弹窗，切换到此账号时触发
@@ -403,7 +426,20 @@ class MultiAccountPageState extends ConsumerState<MultiAccountPage>
 
   @override
   void initState() {
-    currentAccountIndex = 0;
+    // 恢复上次退出时正在使用的账号容器：按 host+alias 重新定位槽位，
+    // 定位不到（账号已删）或单实例模式下退回 0 号槽位。
+    int initialIndex = 0;
+    if (!SpUtil.getBool(spSingleInstance, defValue: false)) {
+      final int? last =
+          getIt<MultiAccountUserInfoViewModel>().lastActiveSlotIndex();
+      if (last != null &&
+          last >= 0 &&
+          last < MultiAccountUserInfoViewModel.maxAccount) {
+        initialIndex = last;
+      }
+    }
+    _index = initialIndex;
+    currentAccountIndex = initialIndex;
     if (SpUtil.getBool(spSingleInstance, defValue: false)) {
       list = [const RepaintBoundary(child: SingleAccountPage(index: 0))];
     } else {

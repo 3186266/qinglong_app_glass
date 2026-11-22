@@ -1,6 +1,12 @@
 const String spLoginHistory = "loginHistory";
 const String spTokenBeanList = "spTokenBeanList";
 const String spAccountCount = "spAccountCount";
+
+/// 上次退出时正在使用的账号（业务键 "host|alias"，见 AccountPersistKey）
+///
+/// 存身份而不是槽位下标：账号排序 / 删除后槽位会变，按 host(+alias)
+/// 重新定位才能准确还原用户关闭前看到的那个容器。
+const String spLastActiveAccount = "spLastActiveAccount";
 const String spVIP = "spvip";
 const String spVIPLOGO = "spviplogo";
 const String spVIPLOGOChangeReminder = "spVIPLOGOChangeReminder";

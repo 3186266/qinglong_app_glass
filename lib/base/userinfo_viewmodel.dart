@@ -1,8 +1,10 @@
 import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/http/url.dart';
 import 'package:qinglong_app/base/multi_account_userinfo_viewmodel.dart';
+import 'package:qinglong_app/base/sp_const.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/utils/icloud_utils.dart';
+import 'package:qinglong_app/utils/sp_utils.dart';
 
 import '../main.dart';
 
@@ -31,7 +33,18 @@ class UserInfoViewModel {
   }
 
   void clearCurrentInfo(int index) {
-    getIt<MultiAccountUserInfoViewModel>().removeTokenBean(index);
+    // 删掉的正好是"上次使用的账号"：记忆里的 host|alias 已失效，
+    // 下一次启动会 mismatch 回落到 0 号槽位，这里顺手清掉，避免误配到
+    // 同一 host 的其它账号上
+    final MultiAccountUserInfoViewModel multi =
+        getIt<MultiAccountUserInfoViewModel>();
+    final String? removedKey = multi.accountKeyAt(index);
+    if (removedKey != null &&
+        removedKey.isNotEmpty &&
+        removedKey == multi.lastActiveAccountKey) {
+      SpUtil.putString(spLastActiveAccount, "");
+    }
+    multi.removeTokenBean(index);
     _host = null;
     _token = null;
     _userName = null;

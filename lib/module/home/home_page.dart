@@ -376,6 +376,8 @@ class HomePageState extends ConsumerState<HomePage> {
             CupertinoSheer(
               title: "添加账户",
               onTap: () {
+                // 添加账号是临时切槽位，不覆盖"上次使用的账号"记忆
+                MultiAccountPageState.keepLastAccountOnNextSwitch = true;
                 WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
                   context
                       .findAncestorStateOfType<MultiAccountPageState>()
