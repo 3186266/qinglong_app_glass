@@ -1,5 +1,3 @@
-import 'dart:math';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:qinglong_app/base/cupertino_sheet.dart';
@@ -10,8 +8,8 @@ import 'package:qinglong_app/base/ui/confirm_dialog.dart';
 import 'package:qinglong_app/main.dart';
 import 'package:qinglong_app/module/home/system_bean.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
+import 'package:qinglong_app/utils/download_saver.dart';
 import 'package:qinglong_app/utils/extension.dart';
-import 'package:qinglong_app/utils/icloud_utils.dart';
 import 'package:qinglong_app/utils/share_utils.dart';
 
 import 'config_bean.dart';
@@ -86,18 +84,20 @@ void showConfigActions(
     CupertinoSheer(
       title: '下载',
       onTap: () async {
-        final int accountIndex = SingleAccountPageState.ofIndex(context);
         final String? text = await _resolveContent(context, bean, content);
         if (text == null) return;
-        try {
-          String name = "${Random().nextInt(40000)}_$title";
-          await FileUtil(
-            accountIndex,
-          ).writeDownloadFile(name, text);
-          "已写入Download/qinglong文件夹下,文件名$name".toast2();
-        } catch (e) {
-          e.toString().toast();
+        // 与脚本下载一致：弹系统保存面板让用户自选位置
+        //（iOS 沙盒目录在「文件」App 里不可见，直接落盘等于找不到文件）
+        final SaveFileOutcome outcome = await DownloadSaver.saveText(
+          fileName: title,
+          content: text,
+        );
+        if (outcome.cancelled) return;
+        if (outcome.error != null) {
+          outcome.error!.toast();
+          return;
         }
+        "已保存到 ${outcome.name ?? title}".toast2();
       },
     ),
     // 自带配置文件不显示删除项（青龙自带不可删，只允许删用户自建）

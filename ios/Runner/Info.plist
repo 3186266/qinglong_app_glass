@@ -45,6 +45,10 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用于通过面容 ID / 触控 ID 解锁应用</string>
 	<key>NSAppTransportSecurity</key>

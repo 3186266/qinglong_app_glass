@@ -1,15 +1,13 @@
-import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:qinglong_app/base/commit_button.dart';
 import 'package:qinglong_app/base/ql_app_bar.dart';
 import 'package:qinglong_app/module/subscribe/add_subscribe_page.dart';
 import 'package:path/path.dart';
-import 'package:qinglong_app/utils/download_dir_utils.dart';
+import 'package:qinglong_app/utils/download_saver.dart';
 import 'package:qinglong_app/utils/extension.dart';
 
 
@@ -96,17 +94,24 @@ class _ScriptDownloadPageState extends ConsumerState<ScriptDownloadPage> {
       var response = await dio.get(controller.text.trim());
       EasyLoading.dismiss();
       if (response.statusCode == 200) {
-        final path = await _localPath;
-        String fileName = basename(controller.text.trim());
-        File f = File(
-          '$path/${DateTime.now().millisecondsSinceEpoch}_$fileName',
-        );
-        if (f.existsSync()) {
-          f.deleteSync();
-        }
-        await f.writeAsString(response.data.toString());
         if (!context.mounted) return;
-        Navigator.of(context).pop({"path": f.path, "name": fileName});
+        // 让用户自选保存位置（iOS 沙盒目录在「文件」App 里不可见，
+        // 原实现写临时目录等于"下载完找不到"）
+        final String fileName = basename(controller.text.trim());
+        final SaveFileOutcome outcome = await DownloadSaver.saveText(
+          fileName: fileName,
+          content: response.data.toString(),
+        );
+        if (!context.mounted) return;
+        if (outcome.cancelled) return;
+        if (outcome.error != null) {
+          outcome.error!.toast();
+          return;
+        }
+        Navigator.of(context).pop({
+          "path": outcome.path,
+          "name": outcome.name ?? fileName,
+        });
       } else {
         response.statusMessage?.toast();
       }
@@ -120,15 +125,5 @@ class _ScriptDownloadPageState extends ConsumerState<ScriptDownloadPage> {
     controller.dispose();
     focusNode.dispose();
     super.dispose();
-  }
-
-  Future<String> get _localPath async {
-    // Android 落到系统 Download/qinglong，文件管理器可见；不可写或非 Android 回退应用缓存目录
-    final Directory? pub = await resolveAndroidScriptDownloadDirectory();
-    if (pub != null) {
-      return pub.path;
-    }
-    final directory = await getTemporaryDirectory();
-    return directory.path;
   }
 }

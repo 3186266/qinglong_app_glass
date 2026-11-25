@@ -1,5 +1,3 @@
-import 'dart:math';
-
 import 'package:qinglong_app/utils/share_utils.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -21,16 +19,15 @@ import 'package:qinglong_app/base/ui/loading_widget.dart';
 import 'package:qinglong_app/base/ui/script_image_preview_page.dart';
 import 'package:qinglong_app/module/task/add_task_page.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
+import 'package:qinglong_app/utils/download_saver.dart';
 import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/language_utils.dart';
 import 'package:path/path.dart' as p;
-import 'package:qinglong_app/utils/icloud_utils.dart';
 
 import '../../../main.dart';
 import '../../config/config_detail_page.dart';
 import '../../home/system_bean.dart';
 import 'script_upload_page.dart';
-import 'script_history_page.dart';
 import '../../../base/ui/container_page_route.dart';
 
 class ScriptDetailPage extends ConsumerStatefulWidget {
@@ -86,11 +83,6 @@ class _ScriptDetailPageState extends ConsumerState<ScriptDetailPage>
           );
         },
       ),
-      // 2.23.0+ 面板支持脚本编辑历史（API 密钥方式无该路由，故一并排除）
-      if (_supportsHistory()) ...[
-        addDivider(),
-        CupertinoSheer(title: "历史版本", onTap: _openHistory),
-      ],
       addDivider(),
       CupertinoSheer(
         title: "编辑",
@@ -127,15 +119,25 @@ class _ScriptDetailPageState extends ConsumerState<ScriptDetailPage>
       CupertinoSheer(
         title: "下载",
         onTap: () async {
-          try {
-            var name = "${Random().nextInt(40000)}_${widget.title}";
-            await FileUtil(
-              SingleAccountPageState.ofIndex(context),
-            ).writeDownloadFile(name, content ?? "");
-            "已写入Download/qinglong文件夹下,文件名$name".toast2();
-          } catch (e) {
-            e.toString().toast();
+          if ((content ?? '').isEmpty) {
+            "未获取到脚本内容,请稍候重试".toast();
+            return;
           }
+          // 交给用户自己选保存位置：iOS 沙盒目录在「文件」App 里不可见，
+          // 直接落盘等于"下载了但找不到文件"。面板默认停在上次保存的目录。
+          EasyLoading.show(status: "准备保存");
+          final SaveFileOutcome outcome = await DownloadSaver.saveText(
+            fileName: widget.title,
+            content: content ?? "",
+          );
+          EasyLoading.dismiss();
+          if (!mounted) return;
+          if (outcome.cancelled) return;
+          if (outcome.error != null) {
+            outcome.error!.toast();
+            return;
+          }
+          "已保存到 ${outcome.name ?? widget.title}".toast2();
         },
       ),
       addDivider(),
@@ -156,39 +158,6 @@ class _ScriptDetailPageState extends ConsumerState<ScriptDetailPage>
         },
       ),
     ]);
-  }
-
-  /// 面板是否支持脚本历史（2.23.0+ 且为账号密码登录）
-  bool _supportsHistory() {
-    try {
-      if (SingleAccountPageState.ofUserInfo(context).useSecretLogined) {
-        return false;
-      }
-      return getIt<SystemBean>(
-        instanceName:
-            (SingleAccountPageState.of(context)?.index ?? 0).toString(),
-      ).isUpperVersion2_23_0();
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// 打开历史版本页；恢复成功时同步页面内容
-  Future<void> _openHistory() async {
-    final dynamic value = await Navigator.of(context).push(
-      ContainerPageRoute(
-        builder:
-            (context) => ScriptHistoryPage(
-              title: widget.title,
-              path: widget.path,
-            ),
-      ),
-    );
-    if (!mounted) return;
-    if (value is String && value != content) {
-      content = value;
-      setState(() {});
-    }
   }
 
   /// 删除脚本（提取公共逻辑，供赛博/非赛博弹窗共用）

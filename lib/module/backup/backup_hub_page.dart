@@ -28,7 +28,9 @@ class _BackupHubPageState extends ConsumerState<BackupHubPage>
   Widget build(BuildContext context) {
     final bool isCyber = ref.read(themeProvider).themeMode == modeCyber;
     final Widget scaffold = Scaffold(
-      backgroundColor: Colors.transparent,
+      // 非赛博模式必须给实色底：无条件 transparent 会让整页透出下层
+      // 页面，文字/图标和上一页内容叠在一起（历史 bug）
+      backgroundColor: isCyber ? Colors.transparent : null,
       appBar: QlAppBar(title: "文件备份"),
       body: SingleChildScrollView(
         primary: true,

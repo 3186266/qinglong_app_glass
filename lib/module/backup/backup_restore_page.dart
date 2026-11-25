@@ -30,7 +30,6 @@ import 'package:qinglong_app/utils/extension.dart';
 import 'package:qinglong_app/utils/file_picker_utils.dart';
 import 'package:qinglong_app/utils/icloud_utils.dart';
 import 'package:qinglong_app/utils/sp_utils.dart';
-import 'package:qinglong_app/utils/utils.dart';
 import 'package:share_plus/share_plus.dart';
 
 /// 备份与恢复页（合并页）：
@@ -79,7 +78,9 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
     _globalFw = FontWeight(ref.watch(textWeightProvider));
     final bool isCyber = ref.read(themeProvider).themeMode == modeCyber;
     final Widget scaffold = Scaffold(
-      backgroundColor: Colors.transparent,
+      // 非赛博模式必须给实色底：无条件 transparent 会让整页透出下层
+      // 页面，文字/图标和上一页内容叠在一起（历史 bug）
+      backgroundColor: isCyber ? Colors.transparent : null,
       appBar: QlAppBar(title: "备份与恢复"),
       body: Stack(
         children: [
@@ -211,9 +212,9 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
         children: [
           SettingsSwitchRow(
             title: "自动备份",
-            value: Utils.accountSpBool(spICloud, _index, defValue: true),
+            value: SpUtil.getBool(spICloud, defValue: true),
             onChanged: (v) {
-              SpUtil.putBool(Utils.accountSpKey(spICloud, _index), v);
+              SpUtil.putBool(spICloud, v);
               setState(() {});
             },
           ),
@@ -236,7 +237,7 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            Utils.accountSpString(timeSpKey, _index),
+            SpUtil.getString(timeSpKey, defValue: ""),
             style: TextStyle(
               fontSize: 16,
               color: ref.watch(themeProvider).themeColor.descColor(),
@@ -268,10 +269,7 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
                 await getIt<ICloudUtils>(
                   instanceName: _index.toString(),
                 ).asyncEnv(result.bean ?? [], focusUpdate: true);
-                SpUtil.putString(
-                  Utils.accountSpKey(spEnvBackTime, _index),
-                  ICloudUtils.now(),
-                );
+                SpUtil.putString(spEnvBackTime, ICloudUtils.now());
                 setState(() {});
               } catch (_) {}
             },
@@ -314,10 +312,7 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
                 await getIt<ICloudUtils>(
                   instanceName: _index.toString(),
                 ).asyncConfig("config.sh", content, focusUpdate: true);
-                SpUtil.putString(
-                  Utils.accountSpKey(spConfigBackTime, _index),
-                  ICloudUtils.now(),
-                );
+                SpUtil.putString(spConfigBackTime, ICloudUtils.now());
                 setState(() {});
               } else {
                 result.message!.toast();
@@ -358,10 +353,7 @@ class _BackupRestorePageState extends ConsumerState<BackupRestorePage>
                 await getIt<ICloudUtils>(
                   instanceName: _index.toString(),
                 ).asyncSubscribe(result.bean ?? "", focusUpdate: true);
-                SpUtil.putString(
-                  Utils.accountSpKey(spSubscribeBackTime, _index),
-                  ICloudUtils.now(),
-                );
+                SpUtil.putString(spSubscribeBackTime, ICloudUtils.now());
                 setState(() {});
               } catch (_) {}
             },

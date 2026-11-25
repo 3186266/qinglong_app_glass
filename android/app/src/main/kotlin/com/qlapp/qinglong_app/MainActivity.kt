@@ -50,6 +50,10 @@ class MainActivity : FlutterActivity() {
     private var filePickerResult: MethodChannel.Result? = null
     /// 本次文件选择是否多选（pickFiles）：决定返回单个 map 还是数组
     private var filePickerMultiple = false
+    /// 保存文件（saveFile）待写入内容与建议文件名
+    private var pendingSaveContent: String? = null
+    private var pendingSaveName: String = ""
+    private val SAVE_FILE_REQUEST_CODE = 1003
     private var webViewResult: MethodChannel.Result? = null
     private val FILE_PICKER_REQUEST_CODE = 1001
     private val WEBVIEW_REQUEST_CODE = 1002
@@ -159,6 +163,19 @@ class MainActivity : FlutterActivity() {
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, filePickerMultiple)
                 }
                 startActivityForResult(intent, FILE_PICKER_REQUEST_CODE)
+            } else if (call.method == "saveFile") {
+                // SAF 保存：让用户自己选目录（Android 也能落到任意位置，
+                // 不再受公共 Download 权限限制）
+                pendingSaveContent = call.argument<String>("content") ?: ""
+                pendingSaveName = call.argument<String>("fileName") ?: "qinglong_export.txt"
+                filePickerResult = result
+                filePickerMultiple = false
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TITLE, pendingSaveName)
+                }
+                startActivityForResult(intent, SAVE_FILE_REQUEST_CODE)
             } else {
                 result.notImplemented()
             }
@@ -385,10 +402,56 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /// SAF 保存回调：把 pendingSaveContent 写入用户选定的 Uri
+    private fun handleSaveFileResult(resultCode: Int, data: Intent?) {
+        val result = filePickerResult
+        filePickerResult = null
+        val content = pendingSaveContent
+        pendingSaveContent = null
+
+        if (resultCode != Activity.RESULT_OK || data?.data == null) {
+            // 用户取消
+            result?.success(null)
+            return
+        }
+        val uri = data.data!!
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                out.write((content ?: "").toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+            // 取可读路径（部分云盘 provider 拿不到真实路径，退回 Uri 字符串）
+            val displayName = queryDisplayName(uri) ?: pendingSaveName
+            val realPath = uri.path ?: uri.toString()
+            result?.success(
+                mapOf(
+                    "path" to realPath,
+                    "name" to displayName
+                )
+            )
+        } catch (e: Exception) {
+            result?.error("save", "写入失败：${e.message}", null)
+        }
+    }
+
+    private fun queryDisplayName(uri: android.net.Uri): String? {
+        return try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == FILE_PICKER_REQUEST_CODE) {
             handleFilePickerResult(resultCode, data)
+        }
+        if (requestCode == SAVE_FILE_REQUEST_CODE) {
+            handleSaveFileResult(resultCode, data)
         }
         if (requestCode == WEBVIEW_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK && data != null) {

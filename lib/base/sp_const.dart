@@ -69,3 +69,6 @@ const String spWebDavAuto = "spWebDavAuto"; // 自动备份开关，默认关
 const String spWebDavLastBackTime = "spWebDavLastBackTime"; // 上次手动备份时间
 const String spWebDavLastAutoBackTime =
     "spWebDavLastAutoBackTime"; // 上次自动备份时间（防抖用，ISO 时间）
+
+// 脚本/配置「下载」上一次用户选择的保存目录（iOS 保存面板的起始位置）
+const String spLastSaveDirectory = "spLastSaveDirectory";
