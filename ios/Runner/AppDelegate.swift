@@ -115,20 +115,23 @@ import UniformTypeIdentifiers
     filePickerMultiple = false
     pendingExportURL = srcURL
 
-    let picker = UIDocumentPickerViewController(forExporting: [srcURL], asCopy: true)
-    picker.delegate = self
-
-    // 2. 默认停在「上次保存的目录」：优先用 bookmark（跨重启有效），
-    //    没有 bookmark 时用记录下来的路径字符串兜底
-    if #available(iOS 13.0, *) {
+    // 2. 构造导出面板。
+    //    forExporting:asCopy: 是 iOS 14+ 才有的 API（部署目标 13.0，
+    //    直接调用会报 "'init(forExporting:asCopy:)' is only available in iOS 14.0"），
+    //    iOS 13 回退到旧的 init(url:in:.exportToService)。
+    let picker: UIDocumentPickerViewController
+    if #available(iOS 14.0, *) {
+      picker = UIDocumentPickerViewController(forExporting: [srcURL], asCopy: true)
+      // 默认停在「上次保存的目录」：bookmark 优先（跨重启有效），
+      // 失效时用记录下来的路径兜底
       if let dirURL = resolveLastSaveDirectory(hint: initialDirectory) {
         picker.directoryURL = dirURL
       }
-    } else if let hint = lastSaveDirectoryURL(hint: initialDirectory) {
-      // iOS 12 及以下没有 directoryURL，只能依赖导入源位置，忽略
-      _ = hint
+    } else {
+      picker = UIDocumentPickerViewController(url: srcURL, in: .exportToService)
+      _ = initialDirectory  // iOS 13 无 directoryURL，面板自行记住上次位置
     }
-
+    picker.delegate = self
     controller.present(picker, animated: true)
   }
 
@@ -171,19 +174,7 @@ import UniformTypeIdentifiers
     return nil
   }
 
-  private func lastSaveDirectoryURL(hint: String) -> URL? {
-    let savedPath = UserDefaults.standard
-      .string(forKey: AppDelegate.lastSaveDirPathKey) ?? ""
-    let candidates = [savedPath, hint].filter { !$0.isEmpty }
-    for p in candidates {
-      var isDir: ObjCBool = false
-      if FileManager.default.fileExists(atPath: p, isDirectory: &isDir),
-         isDir.boolValue {
-        return URL(fileURLWithPath: p)
-      }
-    }
-    return nil
-  }
+
 
   /// 记录本次保存的目录（路径 + bookmark），供下次打开面板时定位
   private func rememberSaveDirectory(of fileURL: URL) {
