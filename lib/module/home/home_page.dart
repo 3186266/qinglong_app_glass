@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:qinglong_app/base/app_colors.dart';
 import 'package:qinglong_app/base/routes.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
 import 'package:qinglong_app/base/sp_const.dart';
@@ -512,9 +513,8 @@ class HomePageState extends ConsumerState<HomePage> {
     final double screenW = MediaQuery.of(context).size.width;
     final double barWidth = (screenW - 16 * 2).clamp(280.0, 560.0);
     final activeColor = theme.primaryColor;
-    // 导航未选中色改为主题独立常量（2026-11-23，用户要求不再跟随字体/主题
-    // 色调节）：赛博=纯白、浅色=纯黑；选中态两主题统一主色（青）
-    final inactiveColor = isCyber ? Colors.white : Colors.black;
+    final inactiveColor =
+        isCyber ? CyberColors.hintGray : AppleColors.textSecondary;
 
     return LiquidGlassTabBar.withImpeller(
       items: _navItems,
@@ -554,15 +554,13 @@ class HomePageState extends ConsumerState<HomePage> {
         appearance:
             isCyber
                 ? const LiquidGlassAppearance(
-                  // 赛博：半透明深色 60%（调参 2026-11-23：40% 太透看不清文案，70%→60%）
-                  color: Color(0x9912121A),
-                  blur: LiquidGlassBlur(sigmaX: 1, sigmaY: 1),
+                  color: Color(0xB312121A), // 赛博：半透明深色 70%（对齐苹果半透明结构）
+                  blur: LiquidGlassBlur(sigmaX: 2, sigmaY: 2),
                   shadow: LiquidGlassShadow(blur: 9, opacity: 0.2),
                 )
                 : const LiquidGlassAppearance(
-                  // 苹果浅色背景 60%（调参 2026-11-23：40% 太透，70%→60%）
-                  color: Color(0x99FFFFFF),
-                  blur: LiquidGlassBlur(sigmaX: 1, sigmaY: 1),
+                  color: Color(0xB3FFFFFF), // 苹果浅色背景 70%
+                  blur: LiquidGlassBlur(sigmaX: 2, sigmaY: 2),
                   // 苹果浅色背景：阴影加深，避免大胶囊与背景融为一体
                   shadow: LiquidGlassShadow(blur: 9, opacity: 0.22),
                 ),
@@ -632,17 +630,20 @@ class HomePageState extends ConsumerState<HomePage> {
       final (outlined, filled) = icons[i];
       return LiquidGlassTabBarItem(
         label: labels[i],
-        // 标签颜色与图标同源（2026-11-23 用户要求：不再跟随字体设置）——
-        // label.color 即 itemStyle.colorFor(selected)：未选中主题独立白/黑、
-        // 选中两主题统一主色（青）；仅保留全局字重
+        // 标签文字跟随字体设置的主/次字体色与全局字重；图标保持主题色
         labelBuilder: (context, label) {
+          final ThemeViewModel theme =
+              ProviderScope.containerOf(context).read(themeProvider);
           final FontWeight fw = FontWeight(
             ProviderScope.containerOf(context).read(textWeightProvider),
           );
           return Text(
             label.text ?? '',
             style: label.textStyle.copyWith(
-              color: label.color,
+              color:
+                  label.selected
+                      ? theme.customPrimaryTextColor
+                      : theme.customSecondaryTextColor,
               fontWeight: fw,
             ),
           );

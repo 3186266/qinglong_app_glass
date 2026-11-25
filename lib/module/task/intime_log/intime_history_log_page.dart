@@ -59,32 +59,83 @@ class _InTimeHistoryLogPageState extends ConsumerState<InTimeHistoryLogPage>
   /// 刚点完运行/暂停时的本地期望状态，避免面板状态刷新有延迟导致按钮来回跳
   bool? _optimisticRunning;
 
+  /// 上次拉取失败的提示；非空时页面显示错误态 + 重试，
+  /// 而不是伪装成"暂无日志"（日志文件可能是空的，两者必须区分开）
+  String? _loadError;
+
   getLogData() async {
     HttpResponse<String> response = await SingleAccountPageState.ofApi(
       context,
     ).taskLogDetail(widget.title, widget.path);
 
     if (response.success) {
-      content = response.bean;
+      content = response.bean ?? "";
+      _loadError = null;
     } else {
-      // 拉取失败也落地空态（toast 一次），避免永久加载
-      content ??= "";
-      (response.message ?? "").toast();
+      // 失败不再落地空态：保留可能已有的内容，首次失败则展示错误 + 重试。
+      // 原实现失败时 content = ""，用户看到的是"暂无日志"，
+      // 无法判断是日志真的为空还是请求失败（"有些直接显示没有日志"）。
+      _loadError = response.message ?? "日志读取失败";
+      _loadError!.toast();
     }
     if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    final Widget logBody =
-        (content == null)
-            ? const Center(child: LoadingWidget())
-            : CupertinoScrollbar(
-              child: LogTextView(
-                content: content,
-                accountIndex: SingleAccountPageState.of(context)?.index ?? 0,
+    final Widget logBody;
+    if (_loadError != null && content == null) {
+      // 首次读取就失败：明确告知失败原因 + 重试，别显示成"暂无日志"
+      logBody = Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 30),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                CupertinoIcons.exclamationmark_circle,
+                size: 34,
+                color: AppColors.warning,
               ),
-            );
+              const SizedBox(height: 10),
+              Text(
+                _loadError!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              CupertinoButton(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 8,
+                ),
+                color: AppColors.actionRed,
+                borderRadius: BorderRadius.circular(999),
+                onPressed: () {
+                  setState(() {
+                    content = null;
+                    _loadError = null;
+                  });
+                  getLogData();
+                },
+                child: const Text("重试", style: TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (content == null) {
+      logBody = const Center(child: LoadingWidget());
+    } else {
+      logBody = CupertinoScrollbar(
+        child: LogTextView(
+          content: content,
+          accountIndex: SingleAccountPageState.of(context)?.index ?? 0,
+          // 真的读到空文件时才说"暂无日志"，与"读取失败"区分开
+          emptyText: "该日志文件为空",
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: QlAppBar(

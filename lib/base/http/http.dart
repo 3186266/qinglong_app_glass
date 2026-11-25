@@ -1097,7 +1097,6 @@ class Http {
             success: false,
             message: responseData["message"] ?? e.message,
             code: responseData["code"] ?? 0,
-            extra: Map<String, dynamic>.from(responseData),
           );
         } else {
           // 非 JSON 响应体（空串 / HTML 兜底页）：服务端没给可读 message，
@@ -1156,12 +1155,16 @@ class Http {
         // responseType 为 plain 时，response.data 是 String，需先 jsonDecode
         dynamic data = response.data;
         if (data is String) {
-          if (data.isEmpty) {
+          // 纯空白同样视为空响应（部分反代/网关会返回 "\n"）
+          if (data.trim().isEmpty) {
+            // 注意：这里不能标 needRelogin。空响应在正常业务里大量出现
+            // （空日志、空脚本列表等），原实现会触发重建 Dio + 静默刷新 +
+            // 重试，最坏还弹「是否重新登录」，用户看到的就是「日志拉不到」。
+            // 只作为空数据返回，由调用方按空态处理。
             return HttpResponse<T>(
-              success: false,
-              code: -1000,
+              success: true,
+              code: 200,
               message: "服务器返回空响应",
-              needRelogin: true,
             );
           }
           // 先尝试 JSON 解析：脚本/日志等读取接口的 data 字段可能是源码文本，
@@ -1279,18 +1282,10 @@ class Http {
       }
     } else {
       code = response.statusCode ?? 0;
-      // 非 200 也尽量保留响应体附加字段（如 413 historyUnavailable/currentHash）
-      Map<String, dynamic>? extra;
-      try {
-        dynamic body = response.data;
-        if (body is String) body = jsonDecode(body);
-        if (body is Map) extra = Map<String, dynamic>.from(body);
-      } catch (_) {}
       return HttpResponse(
         success: false,
         code: code,
-        message: (extra?["message"]?.toString()) ?? response.statusMessage,
-        extra: extra,
+        message: response.statusMessage,
       );
     }
   }
@@ -1305,18 +1300,12 @@ class HttpResponse<T> {
   /// 标记响应被识别为 token 失效（HTML 登录页 / 401），需触发静默刷新
   bool needRelogin;
 
-  /// 服务端原始响应体（仅错误时保留）。
-  /// 用于读取附加字段，如 2.23.0 保存脚本超限返回的
-  /// `historyUnavailable` / `currentHash`。
-  Map<String, dynamic>? extra;
-
   HttpResponse({
     required this.success,
     this.message,
     required this.code,
     this.bean,
     this.needRelogin = false,
-    this.extra,
   });
 }
 

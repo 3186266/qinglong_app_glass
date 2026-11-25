@@ -446,21 +446,12 @@ class Api {
     String cron, {
     int? id,
     String? nId,
-    List<String>? extraSchedules,
   }) async {
     var data = <String, dynamic>{
       "name": name,
       "command": command,
       "schedule": cron,
     };
-
-    // 附加定时规则（青龙 2.24+ 一任务多规则，Issue #3）：
-    // 编辑场景传空列表表示清空；null 表示不改动（老面板不带字段零影响）
-    if (extraSchedules != null) {
-      data["extra_schedules"] = extraSchedules
-          .map((s) => {"schedule": s})
-          .toList();
-    }
 
     if (id != null || nId != null) {
       if (id != null) {
@@ -676,6 +667,9 @@ class Api {
               ).isUpperVersion2_12_2()
               ? "data"
               : "dirs",
+      // 日志列表是动态数据：默认缓存 2 分钟会让新跑出来的任务在列表里
+      // 迟迟不出现，用户以为"这次没产生日志"
+      useCache: false,
     );
   }
 
@@ -700,16 +694,19 @@ class Api {
       }
       return await getIt<Http>(
         instanceName: index.toString(),
-      ).get<String>(url.logDetail, query);
+      ).get<String>(url.logDetail, query, useCache: false);
     }
     if (systemBean.isUpperVersion2_13_0()) {
+      // 日志内容禁止缓存：CacheTtl 给 /logs 分配了 2 分钟 TTL，
+      // 同一任务短时间内再次打开会直接命中旧片段，表现为「日志没更新/
+      // 显示不全/明明是空日志」。这里全部改走实时读取。
       return await getIt<Http>(
         instanceName: index.toString(),
-      ).get<String>("${url.taskLogDetail}$name?path=$path", null);
+      ).get<String>("${url.taskLogDetail}$name?path=$path", null, useCache: false);
     }
     return await getIt<Http>(
       instanceName: index.toString(),
-    ).get<String>("${url.taskLogDetail}$path/$name", null);
+    ).get<String>("${url.taskLogDetail}$path/$name", null, useCache: false);
   }
 
   Future<HttpResponse<List<ScriptData>>> scripts() async {
@@ -723,72 +720,14 @@ class Api {
     );
   }
 
-  /// 保存已有脚本（PUT /scripts）。
-  /// 2.23.0+ 面板会为覆盖前的旧内容留档；内容超过 1 MiB 时返回 413 +
-  /// `historyUnavailable` + `currentHash`，确认后可带
-  /// [skipHistory]=true 与 [expectedHash] 重试（本次不记录历史）。
   Future<HttpResponse<NullResponse>> updateScript(
     String name,
     String path,
-    String content, {
-    bool skipHistory = false,
-    String? expectedHash,
-  }) async {
-    final Map<String, dynamic> body = {
-      "filename": name,
-      "path": path,
-      "content": content,
-    };
-    if (skipHistory) {
-      body["skipHistory"] = true;
-      if (expectedHash != null) body["expectedHash"] = expectedHash;
-    }
+    String content,
+  ) async {
     return await getIt<Http>(instanceName: index.toString()).put<NullResponse>(
       getIt<Url>(instanceName: index.toString()).scriptDetail,
-      body,
-    );
-  }
-
-  /// 2.23.0+ 脚本历史版本列表
-  /// 返回 `{versions: [{id, createdAt, source, hash, size, identical}],
-  /// currentHash, limit}` 的 JSON 字符串
-  Future<HttpResponse<String>> scriptHistory(String name, String? path) async {
-    return await getIt<Http>(instanceName: index.toString()).get<String>(
-      getIt<Url>(instanceName: index.toString()).scriptHistory,
-      {"filename": name, "path": path ?? ""},
-    );
-  }
-
-  /// 2.23.0+ 单个历史版本内容
-  /// 返回 `{version: {id, createdAt, source, hash, content}, current, currentHash}`
-  Future<HttpResponse<String>> scriptHistoryDetail(
-    String name,
-    String? path,
-    String id,
-  ) async {
-    return await getIt<Http>(instanceName: index.toString()).get<String>(
-      getIt<Url>(instanceName: index.toString()).scriptHistoryDetail,
-      {"filename": name, "path": path ?? "", "id": id},
-    );
-  }
-
-  /// 2.23.0+ 恢复到历史版本。
-  /// [expectedHash] 必须是预览时拿到的 currentHash：文件在预览后被改动会返回 409。
-  /// 返回 `{content, changed, historyRecorded, cleanupPending}`
-  Future<HttpResponse<String>> restoreScriptHistory(
-    String name,
-    String? path,
-    String id,
-    String expectedHash,
-  ) async {
-    return await getIt<Http>(instanceName: index.toString()).put<String>(
-      getIt<Url>(instanceName: index.toString()).scriptHistoryRestore,
-      {
-        "filename": name,
-        "path": path ?? "",
-        "id": id,
-        "expectedHash": expectedHash,
-      },
+      {"filename": name, "path": path, "content": content},
     );
   }
 
