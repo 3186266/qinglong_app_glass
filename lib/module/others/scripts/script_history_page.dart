@@ -6,6 +6,7 @@ import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:qinglong_app/base/app_colors.dart';
+import 'package:qinglong_app/base/http/http.dart';
 import 'package:qinglong_app/base/single_account_page.dart';
 import 'package:qinglong_app/base/theme.dart';
 import 'package:qinglong_app/base/ui/confirm_dialog.dart';
@@ -111,7 +112,7 @@ class _ScriptHistoryPageState extends ConsumerState<ScriptHistoryPage> {
     });
     final response = await SingleAccountPageState.ofApi(
       context,
-    ).scriptHistory(widget.title, widget.path);
+    ).scriptHistory(widget.title, widget.path ?? '');
     if (!mounted) return;
     if (!response.success) {
       setState(() {
@@ -145,7 +146,7 @@ class _ScriptHistoryPageState extends ConsumerState<ScriptHistoryPage> {
     EasyLoading.show(status: "加载中");
     final response = await SingleAccountPageState.ofApi(
       context,
-    ).scriptHistoryDetail(widget.title, widget.path, version.id);
+    ).scriptHistoryDetail(widget.title, widget.path ?? '', version.id);
     EasyLoading.dismiss();
     if (!mounted) return;
     if (!response.success) {
@@ -194,9 +195,17 @@ class _ScriptHistoryPageState extends ConsumerState<ScriptHistoryPage> {
 
     setState(() => _restoring = true);
     EasyLoading.show(status: "恢复中");
-    final response = await SingleAccountPageState.ofApi(
-      context,
-    ).restoreScriptHistory(widget.title, widget.path, version.id, hash);
+    // 显式声明泛型：否则 response 被推断成非泛型 HttpResponse，
+    // bean 变成 Object?，后面 jsonDecode 处类型不匹配
+    final HttpResponse<NullResponse> response =
+        await SingleAccountPageState.ofApi(
+          context,
+        ).restoreScriptHistory(
+          widget.title,
+          widget.path ?? '',
+          version.id,
+          hash,
+        );
     EasyLoading.dismiss();
     if (!mounted) return;
     setState(() => _restoring = false);
@@ -210,14 +219,20 @@ class _ScriptHistoryPageState extends ConsumerState<ScriptHistoryPage> {
       }
       return;
     }
-    String content = '';
-    try {
-      final Map<String, dynamic> data =
-          jsonDecode(response.bean ?? '{}') as Map<String, dynamic>;
-      content = data['content']?.toString() ?? '';
-    } catch (_) {}
+    // 恢复接口只返回状态（NullResponse），不返回文件内容。
+    // 这里再读一次文件，把恢复后的内容带回编辑页，避免编辑器仍显示旧内容。
+    final HttpResponse<String> latest = await SingleAccountPageState.ofApi(
+      context,
+    ).scriptDetail(widget.title, widget.path);
+    if (!mounted) return;
+    if (!latest.success) {
+      // 读不到内容也不能让用户以为没恢复：提示后让编辑页自行重读
+      '已恢复，请重新打开文件查看内容'.toast();
+      Navigator.of(context).pop('');
+      return;
+    }
     '已恢复，恢复前的内容已保留'.toast();
-    Navigator.of(context).pop(content);
+    Navigator.of(context).pop(latest.bean ?? '');
   }
 
   @override

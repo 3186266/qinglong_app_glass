@@ -207,6 +207,17 @@ class Url {
           ? "/open/scripts/detail"
           : "/api/scripts/detail";
 
+  /// 脚本历史版本列表 / 单版本详情 / 恢复（青龙 2.23+）
+  get scriptHistory =>
+      getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
+          ? "/open/scripts/history"
+          : "/api/scripts/history";
+
+  get scriptHistoryRestore =>
+      getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
+          ? "/open/scripts/history/restore"
+          : "/api/scripts/history/restore";
+
   /// 拉取脚本目录中的二进制文件（如脚本运行时保存的二维码 PNG）
   /// 走 token 鉴权 GET，返回文件 bytes
   get scriptFile =>
@@ -222,24 +233,6 @@ class Url {
       getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
           ? "/open/scripts/download"
           : "/api/scripts/download";
-
-  /// 2.23.0+ 脚本编辑历史：版本列表（?filename=&path=）
-  get scriptHistory =>
-      getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
-          ? "/open/scripts/history"
-          : "/api/scripts/history";
-
-  /// 2.23.0+ 历史版本内容（?filename=&path=&id=）
-  get scriptHistoryDetail =>
-      getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
-          ? "/open/scripts/history/detail"
-          : "/api/scripts/history/detail";
-
-  /// 2.23.0+ 恢复到历史版本（body: filename/path/id/expectedHash）
-  get scriptHistoryRestore =>
-      getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined
-          ? "/open/scripts/history/restore"
-          : "/api/scripts/history/restore";
 
   get dependencies =>
       getIt<UserInfoViewModel>(instanceName: index.toString()).useSecretLogined

@@ -1239,10 +1239,19 @@ class Http {
               message.contains("com.squareup.moshi")) {
             message = "服务器响应异常，请检查面板服务状态";
           }
+          // 透传业务附加字段（如 2.23+ 脚本保存 413 的 historyUnavailable /
+          // currentHash），调用方需要它决定是否二次确认后强制保存
+          final Map<String, dynamic>? extra =
+              (data["historyUnavailable"] != null ||
+                      data["currentHash"] != null ||
+                      data["detail"] != null)
+                  ? Map<String, dynamic>.from(data)
+                  : null;
           return HttpResponse<T>(
             success: false,
             code: data["code"],
             message: message,
+            extra: extra,
           );
         }
       } catch (e) {
@@ -1300,12 +1309,17 @@ class HttpResponse<T> {
   /// 标记响应被识别为 token 失效（HTML 登录页 / 401），需触发静默刷新
   bool needRelogin;
 
+  /// 失败响应的附加字段（如青龙 2.23+ 脚本保存 413 时返回的
+  /// historyUnavailable / currentHash），供调用方做二次确认
+  Map<String, dynamic>? extra;
+
   HttpResponse({
     required this.success,
     this.message,
     required this.code,
     this.bean,
     this.needRelogin = false,
+    this.extra,
   });
 }
 

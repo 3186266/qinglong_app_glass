@@ -197,6 +197,26 @@ class SystemBean {
   // 必须改用 /configs/detail?path= 与 /logs/detail?file=；
   // 日志接口（/logs/detail、/crons/:id/log、/subscriptions/:id/log）改为分块读取，
   // 默认只返回尾部 256KB，并返回 offset/nextOffset/total/truncated 供分页续读
+  /// 是否 >= 2.23.0（脚本历史版本 / skipHistory 保存依赖此版本）
+  bool isUpperVersion2_23_0() {
+    try {
+      List<String>? version1 = version?.split(".");
+
+      String f = version1?[0] ?? "2";
+      String s = version1?[1] ?? "10";
+      String t = version1?[2] ?? "0";
+
+      if (f.length == 1) f = "0$f";
+      if (s.length == 1) s = "0$s";
+      if (t.length == 1) t = "0$t";
+
+      String tempSum = "$f$s$t";
+      return (int.tryParse(tempSum) ?? 1) >= 022300;
+    } catch (e) {
+      return false;
+    }
+  }
+
   bool isUpperVersion2_22_0() {
     try {
       List<String>? version1 = version?.split(".");
@@ -218,39 +238,6 @@ class SystemBean {
       String tempSum = "$f$s$t";
 
       if ((int.tryParse(tempSum) ?? 1) >= 022200) {
-        return true;
-      }
-
-      return false;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  // 2.23.0：脚本编辑历史（GET /scripts/history、/scripts/history/detail、
-  // PUT /scripts/history/restore）；保存脚本超 1 MiB 时返回 413 + historyUnavailable
-  // + currentHash，需 skipHistory+expectedHash 重试
-  bool isUpperVersion2_23_0() {
-    try {
-      List<String>? version1 = version?.split(".");
-
-      String f = version1?[0] ?? "2";
-      String s = version1?[1] ?? "10";
-      String t = version1?[2] ?? "0";
-
-      if (f.length == 1) {
-        f = "0$f";
-      }
-      if (s.length == 1) {
-        s = "0$s";
-      }
-      if (t.length == 1) {
-        t = "0$t";
-      }
-
-      String tempSum = "$f$s$t";
-
-      if ((int.tryParse(tempSum) ?? 1) >= 022300) {
         return true;
       }
 

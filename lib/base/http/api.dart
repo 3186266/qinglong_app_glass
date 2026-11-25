@@ -723,11 +723,65 @@ class Api {
   Future<HttpResponse<NullResponse>> updateScript(
     String name,
     String path,
-    String content,
-  ) async {
+    String content, {
+    bool skipHistory = false,
+    String? expectedHash,
+  }) async {
+    final Map<String, dynamic> body = {
+      "filename": name,
+      "path": path,
+      "content": content,
+    };
+    // 青龙 2.23+：超出历史记录范围（>1MiB / 非 UTF-8）时返回 413 +
+    // historyUnavailable + currentHash，用户确认后带这两个参数重试，
+    // 本次覆盖不留档。旧面板忽略多余字段，不影响兼容性。
+    if (skipHistory) body["skipHistory"] = true;
+    if (expectedHash != null && expectedHash.isNotEmpty) {
+      body["expectedHash"] = expectedHash;
+    }
     return await getIt<Http>(instanceName: index.toString()).put<NullResponse>(
       getIt<Url>(instanceName: index.toString()).scriptDetail,
-      {"filename": name, "path": path, "content": content},
+      body,
+    );
+  }
+
+  /// 脚本历史版本列表（返回原始 JSON：{versions:[], currentHash, limit}）
+  Future<HttpResponse<String>> scriptHistory(String name, String path) async {
+    return await getIt<Http>(instanceName: index.toString()).get<String>(
+      getIt<Url>(instanceName: index.toString()).scriptHistory,
+      {"filename": name, "path": path},
+      useCache: false,
+    );
+  }
+
+  /// 单个历史版本内容
+  Future<HttpResponse<String>> scriptHistoryDetail(
+    String name,
+    String path,
+    String versionId,
+  ) async {
+    return await getIt<Http>(instanceName: index.toString()).get<String>(
+      getIt<Url>(instanceName: index.toString()).scriptHistory,
+      {"filename": name, "path": path, "versionId": versionId},
+      useCache: false,
+    );
+  }
+
+  /// 恢复到指定历史版本（带 expectedHash 做并发校验，冲突返回 409）
+  Future<HttpResponse<NullResponse>> restoreScriptHistory(
+    String name,
+    String path,
+    String versionId,
+    String expectedHash,
+  ) async {
+    return await getIt<Http>(instanceName: index.toString()).post<NullResponse>(
+      getIt<Url>(instanceName: index.toString()).scriptHistoryRestore,
+      {
+        "filename": name,
+        "path": path,
+        "versionId": versionId,
+        "expectedHash": expectedHash,
+      },
     );
   }
 
