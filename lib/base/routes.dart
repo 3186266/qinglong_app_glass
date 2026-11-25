@@ -30,6 +30,8 @@ import 'package:qinglong_app/module/subscribe/subscribe_detail_page.dart';
 import 'package:qinglong_app/module/subscribe/subscribe_page.dart';
 import 'package:qinglong_app/module/task/task_bean.dart';
 import 'package:qinglong_app/module/task/task_detail/task_detail_page.dart';
+import 'package:qinglong_app/agent/agent_page.dart';
+import 'package:qinglong_app/agent/agent_settings_page.dart';
 import 'package:qinglong_app/base/ui/container_page_route.dart';
 
 class Routes {
@@ -61,6 +63,10 @@ class Routes {
   static const String routeDashboard = "/dashboard";
   static const String routeDashboardTaskResult = "/dashboard/taskResult";
   static const String routeJdck = "/jdck";
+
+  // AI 助手（同步自测试项目，2026-11-23）
+  static const String routeAgent = "/agent";
+  static const String routeAgentSettings = "/agent/settings";
 
   static const String routeIcloudFile = "/icloudfile";
 
@@ -193,6 +199,27 @@ class Routes {
         );
       case routeJdck:
         return ContainerPageRoute(builder: (context) => const JdckPage());
+      case routeAgent:
+        // 入口显式传账号槽位，路由内不再猜「当前是哪个账号」
+        return ContainerPageRoute(
+          builder:
+              (context) => AgentPage(
+                accountIndex:
+                    settings.arguments is int
+                        ? settings.arguments! as int
+                        : null,
+              ),
+        );
+      case routeAgentSettings:
+        return ContainerPageRoute(
+          builder:
+              (context) => AgentSettingsPage(
+                accountIndex:
+                    settings.arguments is int
+                        ? settings.arguments! as int
+                        : null,
+              ),
+        );
     }
 
     return null;
